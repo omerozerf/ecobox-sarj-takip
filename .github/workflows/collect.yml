@@ -8,6 +8,10 @@ name: collect
 # successor. `watchdog.yml` restarts the chain if it ever breaks. Cancel a run to stop it.
 on:
   workflow_dispatch:
+    inputs:
+      loop_seconds:
+        description: How long this run polls before handing over (shorten to test the handover)
+        default: "19800"
 
 permissions:
   contents: write
@@ -19,7 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  LOOP_SECONDS: 19800
+  LOOP_SECONDS: ${{ inputs.loop_seconds }}
   POLL_SECONDS: 180
 
 jobs:
