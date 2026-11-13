@@ -1,0 +1,27 @@
+name: watchdog
+
+# Restarts the `collect` chain when no run of it is queued or in progress. `collect` keeps
+# itself alive, so this only matters after a runner dies before starting its successor.
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  revive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Start collect unless it is alive
+        run: |
+          alive=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow collect.yml --limit 20 \
+            --json status --jq '[.[] | select(.status != "completed")] | length')
+          echo "collect runs alive: $alive"
+          if [ "$alive" -eq 0 ]; then
+            gh workflow run collect.yml --repo "$GITHUB_REPOSITORY" --ref main
+          fi

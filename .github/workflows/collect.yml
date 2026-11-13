@@ -1,23 +1,31 @@
 name: collect
 
-# Records one status snapshot of every Ecobox connector to the `data` branch, so history
-# keeps growing while the machine running the full recorder is asleep.
+# Records a status snapshot of every Ecobox connector to the `data` branch every three
+# minutes, so history keeps growing while the machine running the full recorder is asleep.
+#
+# GitHub's `schedule` trigger never fired for this repository, so the collector does not
+# depend on it: one run polls in a loop for about five and a half hours and then starts its
+# successor. `watchdog.yml` restarts the chain if it ever breaks. Cancel a run to stop it.
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: write
 
+# A successor waits here until the current run has finished.
 concurrency:
   group: collect
   cancel-in-progress: false
 
+env:
+  LOOP_SECONDS: 19800
+  POLL_SECONDS: 180
+
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,14 +37,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - name: Append snapshot
-        working-directory: code
-        run: python -m ecobox.snapshot ../data/snapshots
-      - name: Commit and push
-        working-directory: data
+      - name: Poll and push until the time budget is used
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add snapshots
-          git commit -q -m "data: snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
-          git push -q
+          git -C data config user.name "github-actions[bot]"
+          git -C data config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          while [ "$SECONDS" -lt "$LOOP_SECONDS" ]; do
+            started=$SECONDS
+            # A failed poll or push costs one sample; the next round carries on.
+            if (cd code && python -m ecobox.snapshot ../data/snapshots); then
+              git -C data add snapshots
+              git -C data commit -q -m "data: snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+              git -C data push -q || echo "::warning::push failed, retrying with the next snapshot"
+            else
+              echo "::warning::poll failed"
+            fi
+            rest=$(( POLL_SECONDS - (SECONDS - started) ))
+            if [ "$rest" -gt 0 ]; then sleep "$rest"; fi
+          done
+      - name: Start the successor
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          # After a failure wait first, so a run that breaks at once cannot respawn in a tight loop.
+          if [ "$JOB_STATUS" != "success" ]; then sleep 300; fi
+          gh workflow run collect.yml --repo "$GITHUB_REPOSITORY" --ref main

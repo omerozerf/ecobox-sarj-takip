@@ -78,10 +78,13 @@ katılmaz (aşağıya bakın). Boşlukları GitHub'daki ikinci kaydedici doldura
 
 ## Mac uyurken: GitHub görüntüleri
 
-GitHub Actions'taki `collect` iş akışı (`.github/workflows/collect.yml`) yaklaşık 5 dakikada bir
-bütün prizlerin ham durumunu çekip deponun `data` dalına `snapshots/` altına yazar (biçim:
-`ecobox/snapshot.py`). GitHub zamanlanmış işleri sık sık geciktirir ya da atlar; bu yüzden bu
-kaynak Mac'in yerini tutmaz, yalnızca boşluklarını doldurur.
+GitHub Actions'taki `collect` iş akışı (`.github/workflows/collect.yml`) 3 dakikada bir bütün
+prizlerin ham durumunu çekip deponun `data` dalına `snapshots/` altına yazar (biçim:
+`ecobox/snapshot.py`). GitHub'ın zamanlayıcısı bu depoda hiç tetiklenmediği için iş akışı ona
+bağlı değildir: tek çalışma yaklaşık 5,5 saat döngüde kalır, biterken yerine yenisini başlatır.
+Zincir koparsa `watchdog` iş akışı (saatte bir, zamanlayıcı çalışırsa) onu yeniden başlatır;
+elle başlatmak için `gh workflow run collect.yml`, durdurmak için çalışan işi iptal edin.
+Bu kaynak Mac'in yerini tutmaz, yalnızca boşluklarını doldurur.
 
 `.env`'de `ECOBOX_SNAPSHOT_REPO_URL` doluysa servis açılışta ve sonra saatte bir
 (`ECOBOX_SNAPSHOT_IMPORT_S`) `data` dalını `data/remote` altına girişsiz https ile çeker (sistemin
