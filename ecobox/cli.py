@@ -4,7 +4,7 @@ import argparse
 import logging
 import sys
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 from ecobox import texts
@@ -28,7 +28,7 @@ from ecobox.slack_bot import STATE_CHANNEL_ID, SlackBot, SlackOutbox
 from ecobox.snapshot_source import (DirectorySource, GitSnapshotSource, SnapshotSource,
                                     run_git)
 from ecobox.replies import Reply
-from ecobox.reports import stats_report
+from ecobox.reports import scope_label, stats_report
 from ecobox.stats import Statistics, coverage
 from ecobox.storage import POLL_SNAPSHOT, POLL_STATUS, Storage
 from ecobox.telegram import HttpTelegramClient
@@ -53,7 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     poll.add_argument("--no-store", action="store_true",
                       help="veritabanına yazma (geçici bellek içi DB kullan)")
 
-    sub.add_parser("status", help="veritabanındaki son durumu yazdır (ağ isteği yok)")
+    status = sub.add_parser("status", help="veritabanındaki son durumu yazdır (ağ isteği yok)")
+    status.add_argument("--location", help="konum filtresi, ör. ego, 'f blok'")
 
     stats = sub.add_parser("stats", help="istatistikleri yazdır (ağ isteği yok)")
     stats.add_argument("--location", help="konum filtresi, ör. ego, 'f blok'")
@@ -69,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     charts = sub.add_parser("charts", help="grafikleri PNG olarak yaz (matplotlib gerekir)")
     charts.add_argument("--out", required=True, help="PNG'lerin yazılacağı klasör")
-    charts.add_argument("--kind", help="tek bir tür: isi, saat, zaman, sure, site")
+    charts.add_argument("--kind", help="tek bir tür: harita, saat, zaman, sure, site")
     charts.add_argument("--location", help="konum filtresi")
 
     snapshots = sub.add_parser(
@@ -194,24 +195,19 @@ def cmd_run(_args, config: Config, storage: Storage) -> int:
     return 0
 
 
-def _status_report(config: Config, storage: Storage, now: datetime) -> str:
-    scope = DisplayScope(storage, config.scope_terms)
-    return texts.status_text(scope.current_status(), now, scope.names())
-
-
 def cmd_poll_once(_args, config: Config, storage: Storage) -> int:
     clock = SystemClock()
     recorder = _recorder(config, storage, clock)
     count = recorder.refresh_catalog()
     result = recorder.poll_once()
-    print(f"Kapsamdaki connector: {count}, örnek: {result.sample_count}, "
+    print(f"Kapsamdaki priz: {count}, örnek: {result.sample_count}, "
           f"geçiş: {len(result.transitions)}, eksik: {len(result.missing_connectors)}")
-    print(_status_report(config, storage, clock.now()))
+    print(_ask(config, storage, "durum").text)
     return 0
 
 
-def cmd_status(_args, config: Config, storage: Storage) -> int:
-    print(_status_report(config, storage, SystemClock().now()))
+def cmd_status(args, config: Config, storage: Storage) -> int:
+    print(_ask(config, storage, f"durum {args.location or ''}".strip()).text)
     return 0
 
 
@@ -219,13 +215,14 @@ def cmd_stats(args, config: Config, storage: Storage) -> int:
     stats = _statistics(config, storage)
     scope = DisplayScope(storage, config.scope_terms)
     selection = replace(scope.selection(args.location), connector_id=args.connector)
-    entries = stats.entries(selection)
-    if not entries:
-        print("Seçimle eşleşen AC connector yok (önce `poll-once` ya da `run`).")
+    if not stats.entries(selection):
+        if not storage.has_catalog():
+            print(texts.NO_CATALOG)
+        else:
+            print(texts.unknown_location(args.location, scope.location_terms()))
         return 1
-    print(stats_report(stats, storage, scope, selection,
-                       args.location or args.connector or "tüm AC prizler",
-                       SystemClock().now()))
+    label = args.connector or scope_label(scope, args.location)
+    print(stats_report(stats, scope, selection, label, SystemClock().now()))
     return 0
 
 
@@ -258,6 +255,7 @@ def cmd_charts(args, config: Config, storage: Storage) -> int:
         for image in reply.images:
             (out / image.filename).write_bytes(image.data)
             print(out / image.filename)
+            print("  " + image.caption.replace("\n", "\n  "))
     return 0
 
 

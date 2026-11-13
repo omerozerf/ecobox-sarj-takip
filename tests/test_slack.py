@@ -65,13 +65,13 @@ class SlackCommandsTest(unittest.TestCase):
     def test_help_shows_plain_word_commands(self):
         for text in ("yardım", "yardim", "!yardim", "/yardim"):
             help_text = self.commands.reply(text, self.chat).text
-            self.assertIn("\ndurum – ", help_text)
+            self.assertIn("\ndurum [konum] – ", help_text)
             self.assertIn("haberver ego", help_text)
             self.assertIn("tahmin 20 80", help_text)
             self.assertNotIn("/", help_text.replace("/çıkarma", ""))
 
     def test_unknown_command_and_usage_use_plain_words(self):
-        self.assertIn("\niptal – ", self.ask("merhaba"))
+        self.assertIn("\nKomutlar için: yardim\n", self.ask("merhaba"))
         self.assertIn("ör. tahmin 20 80", self.ask("tahmin 80"))
 
     def ask(self, text: str) -> str:
@@ -80,10 +80,13 @@ class SlackCommandsTest(unittest.TestCase):
     def test_every_command_works_without_slash(self):
         self.assertIn("🟢 1/12 AC priz boş", self.ask("Durum"))
         self.assertIn("haber vereceğim", self.ask("haberver f blok"))
-        self.assertEqual(self.ask("İPTAL"), "Abonelik iptal edildi.")
-        self.assertIn("📊 F blok (AC)", self.ask("istatistik f blok"))
+        self.assertEqual(self.ask("İPTAL"), "Tamam, artık haber vermeyeceğim.")
+        self.assertEqual(self.ask("iptal"),
+                         "Bekleyen bir haber isteğin yok. Kurmak için: haberver")
+        self.assertIn("📊 F blok · ", self.ask("istatistik f blok"))
+        self.assertIn(" F blok: ", self.ask("f blok").split("\n")[0])  # free text: durum
         self.assertIn("🔎 F blok", self.ask("analiz f blok"))
-        self.assertIn("⚡ 57.0 kWh", self.ask("tahmin 20 80"))
+        self.assertIn("⚡ 57 kWh", self.ask("tahmin 20 80"))
 
 
 class SlackBotTest(unittest.TestCase):
@@ -187,7 +190,7 @@ class SlackBotTest(unittest.TestCase):
         bot.poll_once()
         self.slack.say(OWNER_SLACK, "istatistik f &amp; blok")
         bot.poll_once()
-        self.assertIn("'f & blok' ile eşleşen AC priz yok", self.slack.posted[-1][1])
+        self.assertIn("'f & blok' diye bir konum bulamadım.", self.slack.posted[-1][1])
 
     def test_failing_command_does_not_block_later_messages(self):
         bot = self.bot()
@@ -352,7 +355,7 @@ class PerTransportRoutingTest(unittest.TestCase):
         return self.slack.posted[-1][1]
 
     def slack_notifications(self):
-        return [text for _, text in self.slack.posted if text.startswith("🟢 Boşaldı")]
+        return [text for _, text in self.slack.posted if " boşaldı · " in text]
 
     def test_both_transports_fire_on_their_own_side(self):
         self.assertIn("haber vereceğim", self.telegram_says("/haberver ego"))
@@ -363,16 +366,16 @@ class PerTransportRoutingTest(unittest.TestCase):
 
         self.world.poll({F_BLOK_2: "available"})  # F Blok: Slack fires, Telegram waits
         [slack_note] = self.slack_notifications()
-        self.assertIn("Boşaldı: F Blok 2\n", slack_note)
-        self.assertIn("Tekrar haber için: haberver", slack_note)
+        self.assertTrue(slack_note.startswith("🟢 F Blok 2 boşaldı · "), slack_note)
+        self.assertTrue(slack_note.endswith("\nTekrar haber için: haberver f blok"))
         self.assertEqual(self.telegram.sent, [])
 
         self.world.clock.advance(POLL_S)
         self.world.poll({F_BLOK_2: "available", EGO[0]: "available"})  # Ego: Telegram fires
         [(chat, telegram_note)] = self.telegram.sent
         self.assertEqual(chat, OWNER_TELEGRAM)
-        self.assertIn("Boşaldı: Ego 1\n", telegram_note)
-        self.assertIn("Tekrar haber için: /haberver", telegram_note)
+        self.assertTrue(telegram_note.startswith("🟢 Ego 1 boşaldı · "), telegram_note)
+        self.assertTrue(telegram_note.endswith("\nTekrar haber için: /haberver ego"))
         self.assertEqual(len(self.slack_notifications()), 1)
         self.assertEqual(self.world.storage.subscriptions(), [])
 
@@ -386,7 +389,7 @@ class PerTransportRoutingTest(unittest.TestCase):
     def test_cancel_only_affects_its_own_transport(self):
         self.telegram_says("/haberver")
         self.slack_says("haberver")
-        self.assertEqual(self.slack_says("iptal"), "Abonelik iptal edildi.")
+        self.assertEqual(self.slack_says("iptal"), "Tamam, artık haber vermeyeceğim.")
         self.assertEqual([s.transport for s in self.world.storage.subscriptions()], [TELEGRAM])
 
     def test_subscription_waits_while_its_transport_is_not_running(self):

@@ -23,7 +23,8 @@ class TelegramOutbox:
         self._telegram.send_message(int(chat_id), text)
 
     def send_reply(self, chat_id: int | str, reply: Reply) -> None:
-        self.send(chat_id, reply.text)
+        if reply.text:  # a chart reply is its photos alone
+            self.send(chat_id, reply.text)
         for image in reply.images:
             try:
                 self._telegram.send_photo(int(chat_id), image.data, image.filename,
@@ -41,6 +42,14 @@ class TelegramBot:
         self._outbox = TelegramOutbox(telegram)
         self._commands = commands
         self._chat_id = chat_id
+
+    def register_commands(self) -> None:
+        """Lists the commands in Telegram's "/" menu. Best effort: the bot answers without it,
+        so a failure is logged and never stops the bot."""
+        try:
+            self._telegram.set_my_commands(texts.bot_commands())
+        except Exception as exc:
+            log.warning("Telegram command menu not set: %s", exc)
 
     def handle_update(self, update: dict[str, Any]) -> None:
         message = update.get("message")

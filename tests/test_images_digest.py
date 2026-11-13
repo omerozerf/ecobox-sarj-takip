@@ -104,6 +104,15 @@ class SlackUploadTest(unittest.TestCase):
         self.assertEqual(form["channel_id"], "G1")
         self.assertEqual(json.loads(form["files"]), [{"id": "F123", "title": "Isı haritası"}])
 
+    def test_comment_is_posted_with_the_file_escaped(self):
+        requests = []
+        with serve(requests, {"ok": True, "upload_url": "https://files.slack.com/u",
+                              "file_id": "F1"}, b"OK", {"ok": True, "files": []}):
+            HttpSlackClient(self.TOKEN).upload_file("G1", PNG, "a.png", "Başlık",
+                                                    "Diğer: grafik saat & site")
+        self.assertEqual(self.form(requests[2])["initial_comment"],
+                         "Diğer: grafik saat &amp; site")
+
     def test_missing_scope_surfaces_as_a_slack_error(self):
         with serve([], {"ok": False, "error": "missing_scope"}):
             with self.assertRaises(SlackError) as caught:
@@ -130,24 +139,24 @@ class DeliveryTest(unittest.TestCase):
             self.world.clock.advance(POLL_S)
         self.commands = make_commands(self.world, FakeRenderer())
 
-    def test_telegram_sends_text_then_each_photo(self):
+    def test_telegram_sends_a_chart_as_its_photo_alone(self):
         telegram = FakeTelegram()
         TelegramBot(telegram, self.commands, OWNER_TELEGRAM).handle_update(
             message(OWNER_TELEGRAM, "/grafik zaman"))
-        [(chat, text)] = telegram.sent
-        self.assertEqual(chat, OWNER_TELEGRAM)
-        self.assertTrue(text.startswith("📈 Hacettepe: priz zaman çizelgesi"))
-        self.assertEqual([(c, name) for c, _, name, _ in telegram.photos],
-                         [(OWNER_TELEGRAM, "priz-zaman-cizelgesi-24s.png"),
-                          (OWNER_TELEGRAM, "priz-zaman-cizelgesi-7g.png")])
-        self.assertTrue(all(data.startswith(PNG_SIGNATURE) for _, data, _, _ in telegram.photos))
+        self.assertEqual(telegram.sent, [])  # no text message repeating the image
+        [(chat, data, name, caption)] = telegram.photos  # under a day: no 7-day chart yet
+        self.assertEqual((chat, name), (OWNER_TELEGRAM, "priz-zaman-cizelgesi-24s.png"))
+        self.assertTrue(data.startswith(PNG_SIGNATURE))
+        self.assertEqual(caption, "🕒 Şu an 1/12 priz boş\n"
+                                  "7 günlük çizelge 1 gün kayıttan sonra gelecek.\n"
+                                  "Diğer: /grafik harita · saat · sure · site")
 
     def test_telegram_photo_failure_is_reported_in_chat(self):
         telegram = FakeTelegram()
         telegram.fail_photo = True
         TelegramOutbox(telegram).send_reply(OWNER_TELEGRAM, REPLY)
         self.assertEqual([text for _, text in telegram.sent],
-                         ["📈 başlık", "Grafik gönderilemedi; biraz sonra tekrar deneyin."])
+                         ["📈 başlık", "Grafik gönderilemedi; biraz sonra tekrar dene."])
 
     def test_slack_uploads_into_its_channel(self):
         slack = FakeSlack()
@@ -155,12 +164,14 @@ class DeliveryTest(unittest.TestCase):
                        "ecobox-sarj")
         bot.poll_once()
         slack.say(OWNER_SLACK, "grafik")
+        posted = len(slack.posted)
         self.assertEqual(bot.poll_once(), 1)
-        self.assertTrue(slack.posted[-1][1].startswith("📈 Hacettepe: gün × saat"))
-        self.assertIn("(grafik <tür>)", slack.posted[-1][1])  # Slack writes it without "/"
+        self.assertEqual(len(slack.posted), posted)  # the file is the whole reply
         [(channel, data, filename, title)] = slack.uploads
         self.assertEqual((channel, filename), (FakeSlack.CHANNEL, "bos-priz-isi-haritasi.png"))
         self.assertTrue(data.startswith(PNG_SIGNATURE))
+        self.assertEqual(title, "🟢 Gün × saat boş priz şansı · henüz az kayıt")
+        self.assertEqual(slack.comments, ["Diğer: grafik saat · zaman · sure · site"])
         self.assertEqual(bot.poll_once(), 0)  # the bot's own file post is not a command
 
     def test_slack_missing_scope_keeps_the_transport_running(self):
@@ -170,6 +181,14 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual([text for _, text in slack.posted],
                          ["📈 başlık", "Grafik gönderilemedi: Slack uygulamasına files:write "
                                        "izni eklenmeli (README, Slack botunu kurma)."])
+
+
+class DigestTextTest(unittest.TestCase):
+    def test_dates_across_months(self):
+        from ecobox.texts import _date_range
+        self.assertEqual(_date_range(datetime(2026, 10, 29, 21, 0, tzinfo=UTC),
+                                     datetime(2026, 11, 5, 20, 59, tzinfo=UTC)),
+                         "30 Ekim – 5 Kasım")
 
 
 class RecordingOutbox:
@@ -274,11 +293,15 @@ class DigestComposerTest(unittest.TestCase):
         renderer = FakeRenderer()
         reply = DigestComposer(InsightEngine(stats), ChartBook(stats, renderer),
                                display_scope(world))(world.clock.now())
-        self.assertTrue(reply.text.startswith("📬 Haftalık özet · 9 Kasım – 15 Kasım\n"
-                                              "Hacettepe · 12 AC priz · 2,8 gün gözlem\n\n"),
-                        reply.text)
-        self.assertIn("📈 Bu hafta boş priz bulma şansı %100", reply.text)
+        blocks = reply.text.split("\n\n")
+        self.assertEqual(blocks[0], "📬 Haftalık özet · 9–15 Kasım\n"
+                                    "Hacettepe · 12 AC priz · 2,8 günlük kayıt")
+        self.assertTrue(blocks[1].startswith("📈 Bu hafta boş priz bulma şansı %100"))
+        self.assertEqual(len(blocks), 1 + 4)  # at most four findings
+        self.assertNotIn("⏳", reply.text)  # "still missing" is not repeated every week
         self.assertEqual([i.filename for i in reply.images], ["bos-priz-isi-haritasi.png"])
+        [(_, _, _, subtitle)] = renderer.calls
+        self.assertIn("2,8 günlük kayıt", subtitle)  # the chart covers the same week
 
         without = DigestComposer(InsightEngine(stats),
                                  ChartBook(stats, FakeRenderer(unavailable=True)),

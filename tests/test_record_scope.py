@@ -132,10 +132,13 @@ class RecordScopeTest(unittest.TestCase):
         self.assertNotIn("Hacettepe", status)  # short names are computed over Hacettepe only
         self.assertIn("Ego 4", status)
         stats = commands.reply("/istatistik", chat).text
-        self.assertIn("Dayanak: 1 okuma", stats)
+        self.assertTrue(stats.startswith("📊 Hacettepe · şu an 1/12 priz boş"), stats)
+        self.assertNotIn("Akıncı", stats)
         unknown = commands.reply("/haberver kızılay", chat).text
-        self.assertIn("eşleşen AC priz yok", unknown)
-        self.assertNotIn("Akıncı", unknown)  # only display-scope locations are offered
+        self.assertIn("diye bir konum bulamadım", unknown)
+        self.assertNotIn("akıncı", unknown.casefold())  # only display-scope places are offered
+        self.assertTrue(commands.reply("akıncı plaza", chat).text.startswith(
+            "Bu komutu tanımıyorum."))  # free text only recognises display-scope places
 
     def test_subscriptions_fire_only_for_display_scope_sockets(self):
         self.world.poll()
@@ -156,7 +159,8 @@ class RecordScopeTest(unittest.TestCase):
         self.world.clock.advance(POLL_S)
         self.world.poll({elsewhere: "available", EGO[0]: "available"})
         self.assertEqual([text for _, text in telegram.sent],
-                         ["🟢 Boşaldı: Ego 1\nTekrar haber için: /haberver"])
+                         ["🟢 Ego 1 boşaldı · 11:09\nŞu an 2/12 boş · /durum\n"
+                          "Tekrar haber için: /haberver"])
 
     def test_analysis_reaches_outside_the_display_scope(self):
         self.world.poll()

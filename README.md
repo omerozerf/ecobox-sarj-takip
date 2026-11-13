@@ -8,12 +8,12 @@ Ecobox sitelerini kapsar.
   isteği zaten hepsini getirir). Bot komutları ve bildirimler yalnızca görünen kapsamı
   (`ECOBOX_SCOPE`, varsayılan Hacettepe) gösterir; diğer siteler karşılaştırma için tutulur.
 - **Analiz:** biriken geçmiş, yüksek sesle söylenebilecek cümlelere çevrilir: hangi saatte boş
-  priz bulmak kolay, insanlar ne zaman takıp çıkarıyor, bir araç prizi ne kadar işgal ediyor,
+  priz bulmak kolay, insanlar ne zaman takıp çıkarıyor, bir araç prizde ne kadar kalıyor,
   hangi priz yürümeye değer, hangisi arızalı, Hacettepe diğer sitelere göre ne kadar yoğun, bu
   hafta geçen haftadan farklı mı. Her bulgu neye dayandığını yazar; verisi yetmeyen bulgu tahmin
   etmez, neye ihtiyacı olduğunu tek satırda söyler.
 - **Grafikler:** telefonda okunur PNG'ler (gün × saat ısı haritası, takma/çıkarma saatleri,
-  priz zaman çizelgesi, işgal süresi dağılımı, site karşılaştırması).
+  priz zaman çizelgesi, prizde kalma süresi, site karşılaştırması); başlıkları çıkarımı söyler.
 - **Telegram ve Slack botu:** anlık durum, "boşalınca haber ver", istatistik, analiz,
   grafik, haftalık özet ve şarj süresi/ücret tahmini. İkisi aynı komutları bilir; biri, ikisi
   ya da hiçbiri açık olabilir.
@@ -24,8 +24,8 @@ Grafikler için matplotlib gerekir; proje içindeki `.venv`'e kurulur. matplotli
 Slack token'ı olmadan da kaydedici çalışır; veri toplamaya bot hazır olmadan başlanabilir.
 
 **Süre adı:** API bir prizin "dolu" olduğunu söyler ama araç hâlâ şarj mı oluyor, yoksa şarjı
-bitip takılı mı duruyor ayırt etmez; enerji ya da araç bilgisi de vermez. Bu yüzden oturum
-süresi her yerde **prizi işgal süresi** diye geçer, şarj süresi değil.
+bitip takılı mı duruyor ayırt etmez; enerji ya da araç bilgisi de vermez. Bu yüzden bir aracın
+süresi her yerde **prizde kalma süresi** diye geçer, şarj süresi değil.
 
 ## Başlangıç
 
@@ -42,7 +42,8 @@ Diğer komutlar (ağ isteği yapmaz, yalnızca veritabanını okur):
 
 ```bash
 python3 -m ecobox status                    # son kaydedilen durum
-python3 -m ecobox stats                     # tüm AC prizler
+python3 -m ecobox status --location ego     # yalnızca bir konum
+python3 -m ecobox stats                     # görünen kapsam (Hacettepe)
 python3 -m ecobox stats --location ego      # konum filtresi (ör. ego, "f blok", arge)
 python3 -m ecobox estimate 20 80            # %20 → %80 süre, bitiş saati, ücret
 python3 -m ecobox insights                  # botun `analiz` cevabı
@@ -124,9 +125,22 @@ kenarında Mac'in son okumasıyla ilk görüntü arasındaki adımı eşiğin al
 Bot yalnızca bu chat id'ye hizmet verir; başka sohbetlere "özel kullanım" der. Token loglara
 yazılmaz.
 
-Komutlar: `/durum`, `/haberver [konum]`, `/iptal`, `/istatistik [konum]`, `/analiz [konum]`,
-`/grafik [tür] [konum]`, `/tahmin <başlangıç %> <hedef %> [konum]`, `/yardim`.
+Komutlar: `/durum [konum]`, `/haberver [konum]`, `/iptal`, `/istatistik [konum]`,
+`/analiz [konum]`, `/grafik [tür] [konum]`, `/tahmin <başlangıç %> <hedef %> [konum]`, `/yardim`.
+Bot açılınca bu komutları Telegram'ın "/" menüsüne de yazar (`setMyCommands`; olmazsa bot yine
+çalışır). Komut yazmadan bir konum adı yazmak (`ego`, `f blok boş mu`) `durum <konum>` sayılır;
+tanınmayan başka bir mesaja kısa bir "tanımıyorum" cevabı gelir. Bilinmeyen bir konuma cevap,
+yazılabilecek kısa konum adlarını önerir (ör. `arge · ego · f blok · otopark`).
+
+- `durum [konum]`: şu an hangi priz boş. Hiç boş priz yoksa ve geçmişte en az 3 gün bu saatte
+  ölçülebildiyse "Bu saatte genelde … içinde biri boşalıyor" satırı eklenir.
+- `istatistik [konum]`: şimdi gidersem boş bulur muyum. Önümüzdeki saatlerin boş priz şansı
+  (kayıt olmayan saatler tek satırda), takma ve çıkarmanın en yoğun 2 saati (`analiz` ile aynı
+  hesap ve eşik), prizde kalma süresi ve en sık boş prizler. Hepsi doluysa bekleme bilgisi başta.
+- `analiz [konum]`: geçmiş: ne zaman boş, araçlar kaç saat kalıyor (aşağıda).
+
 `/haberver` bir kez çalışır: eşleşen bir AC priz boş duruma geçince mesaj atar ve abonelik kapanır.
+Bildirim kurulduğu konumu korur ("Tekrar haber için: /haberver ego").
 
 ## Slack botunu kurma
 
@@ -162,13 +176,20 @@ Abonelikler yapıldıkları yere bağlıdır: Slack'te `haberver` derseniz bildi
 Telegram'da `/haberver` derseniz Telegram'a gelir; ikisi aynı anda açık olabilir. `iptal`
 yalnızca yazıldığı taraftaki aboneliği kapatır.
 
+Grafik istenince ayrı bir metin mesajı gelmez: resim, altında çıkarımı ve diğer grafik türleri
+yazan kısa bir altyazıyla gider (Slack'te dosya başlığı ve dosyayla gelen yorum).
+
 Slack'in hız sınırına takılırsa (HTTP 429) servis Slack'in söylediği süre kadar bekler. Slack ya
 da Telegram tarafındaki bir hata kaydediciyi ve diğer botu durdurmaz. Token loglara yazılmaz.
 
 ## Analiz ve grafikler
 
 `analiz [konum]` bulguları en kullanışlıdan başlayarak sıralar; her bulgunun altında `↳` ile
-neye dayandığı yazar, verisi yetmeyenler en altta "Henüz erken" başlığında tek satır olur.
+neye dayandığı yazar. Verisi yetmeyenler en altta tek bir `⏳` paragrafında, bekledikleri veriye
+göre gruplanır ("5 araç dolunca (şu an 3): prizde kalma süreleri. 1 günlük kayıt dolunca: …").
+Saat bulgusu 3 günden az kayıtta genel bir kalıp gibi değil "Şimdiye kadar (N gün)" diye yazılır.
+Sözcükler sabittir: prizdeki bir kullanım "araç", olaylar "takma / çıkarma", veri kapsamı
+"N saatlik/günlük kayıt".
 Konum verilmezse görünen kapsam (Hacettepe) analiz edilir; görünen kapsamda eşleşmeyen bir
 konum bütün kayıtlı sitelerde aranır. Analiz son 8 haftaya bakar, veri biriktikçe kendiliğinden
 netleşir.
@@ -176,29 +197,35 @@ netleşir.
 | Bulgu | Gerekli en az veri |
 |---|---|
 | Boş priz bulmanın en kolay/zor saati (hafta içi ve hafta sonu ayrı) | 3 saat diliminde 10'ar okuma (yarım saat) |
-| En sık boş / neredeyse hiç boş olmayan prizler | Priz başına 60 okuma (3 saat) |
-| Prizi işgal süresi | 5 temiz oturum |
+| Saat bulgusunun "hafta içi" kalıbı olarak yazılması | O gün grubunda 3 farklı tarih |
+| İlk bakılacak priz / nadiren boş olanlar (zamanın %10'undan az) | Priz başına 60 okuma (3 saat) |
+| Prizde kalma süresi | 5 araç (kayıt kesintisine denk gelmeyen) |
 | Takma ve çıkarma saatleri | 5 kesin takma ya da çıkarma |
-| Geliş saatine göre işgal süresi | 2 zaman diliminde 3'er temiz oturum |
-| Priz başına günlük kullanım | Priz başına 1 günlük gözlem |
-| 4 saatten uzun işgaller | 5 temiz oturum |
+| Geliş saatine göre kalma süresi | 2 zaman diliminde 3'er araç |
+| Priz başına günlük kullanım | Priz başına 1 günlük kayıt |
+| 4 saatten uzun kalanlar | 5 araç |
 | Arıza, çevrimdışı, bakım payı | Priz başına 60 okuma |
-| Diğer Ecobox siteleriyle karşılaştırma | Ortak pencerede en az 3 başka site |
-| Geçen haftaya göre değişim | Son iki haftanın her birinde 2,5 günlük gözlem |
+| Diğer Ecobox siteleriyle karşılaştırma | Ortak pencerede en az 3 başka site ve 1 günlük kayıt |
+| Geçen haftaya göre değişim | Son iki haftanın her birinde 2,5 günlük kayıt |
 
 Eşikler `ecobox/insights.py` içindeki `Thresholds`'ta; yeni bir bulgu türü bir kural
 fonksiyonu yazıp `DEFAULT_RULES`'a eklenerek gelir.
 
-`grafik [tür] [konum]` türleri: `isi` (varsayılan; gün × saat boş priz şansı), `saat` (takma ve
-çıkarma saatleri), `zaman` (priz zaman çizelgesi, son 24 saat ve son 7 gün: iki resim), `sure`
-(işgal süresi dağılımı), `site` (sitelere göre AC doluluk oranı). Gözlem olmayan hücreler
-taralı çizilir, "%0"dan ayırt edilir; her grafik alt başlığında kaç prize ve ne kadar gözleme
-dayandığını yazar.
+`grafik [tür] [konum]` türleri: `harita` (varsayılan; gün × saat boş priz şansı; eski adı `isi`
+de çalışır), `saat` (takma ve çıkarma saatleri), `zaman` (priz zaman çizelgesi, son 24 saat ve
+son 7 gün; 7 günlük resim 1 gün kayıttan sonra gelir), `sure` (prizde kalma süresi), `site`
+(sitelere göre AC doluluk; yalnızca en az 2 AC prizli siteler, sıralamada Hacettepe'nin 4 üstü
+ve 4 altı, en altta diğer sitelerin ortalaması; `analiz` ile aynı eşikleri bekler). Grafik
+başlığı çıkarımın kendisidir ("Hafta içi boş priz en kolay 07:00–08:00"); eşik dolmadıysa tarif
+edici bir başlık kalır. Kayıt olmayan hücreler taralı çizilir, "%0"dan ayırt edilir; her grafik
+alt başlığında kaç prize ve ne kadar kayda dayandığını yazar. Yazılar telefonda (≈360 px
+genişlik) okunacak boyutta: hiçbiri 15 punto altında değil.
 
 **Haftalık özet:** `DIGEST_WEEKDAY` ve `DIGEST_HOUR` (İstanbul saati) geldiğinde, son 7 günün
-bulguları ve ısı haritası açık olan her bota kendiliğinden gider. Mac o an uykudaysa aynı hafta
+bulguları (önce haftalık değişim, en fazla 4 bulgu, "henüz erken" listesi olmadan) ve aynı 7
+günün gün × saat grafiği açık olan her bota kendiliğinden gider. Mac o an uykudaysa aynı hafta
 uyanınca gönderilir; haftada bir kereden fazla gitmez (gönderilen hafta `service_state`'te
-tutulur). Toplam gözlem `DIGEST_MIN_DAYS` günden azsa gönderilmez. `DIGEST_WEEKDAY=0` kapatır.
+tutulur). Toplam kayıt `DIGEST_MIN_DAYS` günden azsa gönderilmez. `DIGEST_WEEKDAY=0` kapatır.
 
 ## Veriler nerede
 
@@ -231,7 +258,8 @@ okuma; sentetik bir günle ölçüldü), ayda ~0,5 GB. Yalnızca Hacettepe kayde
 **Boşluklar:** Bir prizin önceki örneği 2,5 × okuma aralığından (varsayılan 7,5 dk) eskiyse, o
 arada olan değişimin zamanı bilinmez. Bu geçişler `uncertain` işaretlenir; takılma/çıkarma saati
 istatistiklerine katılmaz. İçinde boşluk olan ya da belirsiz bir geçişle başlayan/biten
-oturumlar işgal süresi istatistiğine katılmaz. Doluluk oranları yalnızca gerçekten gözlenen okumaları
+oturumlar prizde kalma süresi istatistiğine katılmaz ("kayıt kesintisine denk gelen N araç
+sayılmadı"). Doluluk oranları yalnızca gerçekten gözlenen okumaları
 sayar. Her istatistik kaç gözleme dayandığını yazar.
 
 ## Uyarı: resmi olmayan uç nokta

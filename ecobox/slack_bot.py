@@ -41,10 +41,13 @@ class SlackOutbox:
     def send_reply(self, chat_id: int | str, reply: Reply) -> None:
         """A failed image upload is reported in the channel instead of raised: raising would
         stop the transport (missing_scope is fatal) or replay the command after a restart."""
-        self.send(chat_id, reply.text)
+        if reply.text:  # a chart reply is its files alone
+            self.send(chat_id, reply.text)
         for image in reply.images:
             try:
-                self._slack.upload_file(str(chat_id), image.data, image.filename, image.caption)
+                title, _, comment = image.caption.partition("\n")
+                self._slack.upload_file(str(chat_id), image.data, image.filename, title,
+                                        comment)
             except SlackError as exc:
                 log.warning("Slack image upload failed: %s", exc)
                 self.send(chat_id, texts.image_failed(missing_scope=exc.error == "missing_scope"))

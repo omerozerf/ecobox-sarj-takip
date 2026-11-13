@@ -108,6 +108,7 @@ class BotLoop:
                 log.exception("handling update %s failed", update["update_id"])
 
     def run(self, stop: threading.Event) -> None:
+        self._bot.register_commands()
         while not stop.is_set():
             try:
                 self.step()

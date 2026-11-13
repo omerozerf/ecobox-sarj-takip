@@ -77,6 +77,30 @@ class BotLoopTest(unittest.TestCase):
         self.assertEqual(handled, [2])
         self.assertEqual(loop._offset, 3)
 
+    def test_run_registers_the_command_menu_first(self):
+        import threading
+        calls = []
+
+        class Bot:
+            def register_commands(self):
+                calls.append("menu")
+
+            def handle_update(self, update):
+                calls.append("update")
+
+        stop = threading.Event()
+        telegram = FakeTelegram()
+        telegram.updates = [[message(1, "/x", 1)]]
+        loop = BotLoop(telegram, Bot(), Backoff(5, 900))
+        original = loop.step
+
+        def step_once():
+            original()
+            stop.set()
+        loop.step = step_once
+        loop.run(stop)
+        self.assertEqual(calls, ["menu", "update"])
+
 
 class FakeResponse(io.BytesIO):
     def __enter__(self):
@@ -140,6 +164,22 @@ class HttpClientsTest(unittest.TestCase):
             with self.assertRaises(TelegramError) as caught:
                 client.get_updates(None, 30)
         self.assertEqual(str(caught.exception), "getUpdates: HTTP 401")
+
+
+class TelegramCommandMenuTest(unittest.TestCase):
+    def test_set_my_commands_request(self):
+        requests = []
+
+        def urlopen(request, timeout):
+            requests.append(request)
+            return FakeResponse(json.dumps({"ok": True, "result": True}).encode())
+
+        with mock.patch.object(urllib.request, "urlopen", urlopen):
+            HttpTelegramClient("1:T").set_my_commands([("durum", "[konum] – şu an hangi priz boş")])
+        [request] = requests
+        self.assertTrue(request.full_url.endswith("/setMyCommands"))
+        self.assertEqual(json.loads(request.data), {"commands": [
+            {"command": "durum", "description": "[konum] – şu an hangi priz boş"}]})
 
 
 class ConfigCliTest(unittest.TestCase):

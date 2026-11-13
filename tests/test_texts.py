@@ -3,14 +3,18 @@ from datetime import UTC, datetime, timedelta
 
 from helpers import World
 
+from ecobox.charts import ChartBook
 from ecobox.estimate import ChargeEstimate
-from ecobox.labels import ShortNames
+from ecobox.insights import Missing
+from ecobox.labels import ShortNames, location_words
 from ecobox.records import CatalogEntry, CurrentStatus
 from ecobox.state import AVAILABLE, CHARGING, FAULTED
-from ecobox.stats import (ConnectorShare, DurationSummary, FreeCell, FreeGrid,
+from ecobox.stats import (ConnectorShare, Coverage, DurationSummary, FreeCell, FreeGrid,
                           TimeDistribution, WaitSummary)
-from ecobox.texts import (estimate_text, help_text, notification_text, stats_text,
-                          status_text)
+from ecobox.stats_view import NowCount, StatsView
+from ecobox.texts import (CHART_KINDS, bot_commands, estimate_text, free_soon_text, help_text,
+                          missing_text, notification_text, stats_text, status_text,
+                          subscribed_text, unknown_location)
 
 NOW = datetime(2026, 11, 10, 14, 20, tzinfo=UTC)  # 17:20 in Istanbul
 
@@ -83,11 +87,11 @@ class StatusTextTest(unittest.TestCase):
             "🟢 2/6 AC priz boş",
             "Son okuma 17:19 (1 dk önce)",
             "",
-            "Boş",
+            "Boş · ne zamandır",
             "🟢 Ego 2 · az önce",
             "🟢 F · 1 sa 12 dk",
             "",
-            "Dolu",
+            "Dolu · ne zamandır",
             "🔴 Ego 3 · en az 5 sa 44 dk",
             "🔴 Ego 4 · 5 sa 6 dk",
             "🔴 Ego 1 · 3 sa 7 dk",
@@ -97,6 +101,10 @@ class StatusTextTest(unittest.TestCase):
             "",
             "⚡ DC: 1/2 boş"]))
 
+    def test_a_reading_under_a_minute_old_is_just_now(self):
+        fresh = [status(self.entries[0], CHARGING, 30, read_ago=0)]
+        self.assertIn("Son okuma 17:20 (az önce)", status_text(fresh, NOW, self.names))
+
     def test_nothing_free_and_stale_reading(self):
         busy = [status(e, CHARGING, 30, read_ago=77) for e in self.entries[:2]]
         text = status_text(busy, NOW, self.names)
@@ -105,6 +113,24 @@ class StatusTextTest(unittest.TestCase):
         self.assertNotIn("Boş\n", text)  # empty section: no heading
         self.assertNotIn("⚡", text)  # no DC socket in scope
 
+    def test_location_headline_and_the_free_soon_line(self):
+        busy = [status(e, CHARGING, 30) for e in self.entries[:4]]
+        hint = "Bu saatte genelde 1 sa 10 dk içinde biri boşalıyor · /haberver ego"
+        text = status_text(busy, NOW, self.names, "Ego", hint)
+        self.assertEqual(text.split("\n\n")[0], "🔴 Ego: boş AC priz yok (0/4)\n"
+                                                 "Son okuma 17:19 (1 dk önce)\n" + hint)
+        some_free = status_text(self.statuses[:2], NOW, self.names, "Ego", hint)
+        self.assertTrue(some_free.startswith("🟢 Ego: 1/2 AC priz boş\n"))
+        self.assertNotIn(hint, some_free)  # only when nothing is free
+
+    def test_free_soon_needs_enough_measured_days(self):
+        wait = WaitSummary(5, 3, 3, 70.0, 50.0, 90.0)
+        self.assertEqual(free_soon_text(wait, 3, "/", "ego"),
+                         "Bu saatte genelde 1 sa 10 dk içinde biri boşalıyor · /haberver ego")
+        self.assertEqual(free_soon_text(wait, 3, "", None),
+                         "Bu saatte genelde 1 sa 10 dk içinde biri boşalıyor · haberver")
+        self.assertIsNone(free_soon_text(WaitSummary(5, 2, 2, 70.0, 50.0, 90.0), 3, "/", None))
+
     def test_ten_minutes_is_not_stale_yet(self):
         text = status_text([status(self.entries[0], AVAILABLE, 5, read_ago=10)], NOW,
                            self.names)
@@ -112,94 +138,168 @@ class StatusTextTest(unittest.TestCase):
 
 
 class NotificationTextTest(unittest.TestCase):
-    def test_several_sockets_and_prefix(self):
+    def test_several_sockets_prefix_and_location(self):
         catalog = [entry(1, "Hacettepe Ego - 1 Ac"), entry(2, "Hacettepe Ego - 2 Ac"),
                    entry(3, "Hacettepe-F")]
         names = ShortNames(catalog)
-        self.assertEqual(notification_text(catalog[:2], "/", names),
-                         "🟢 Boşaldı: Ego 1, Ego 2\nTekrar haber için: /haberver")
-        self.assertEqual(notification_text(catalog[2:], "", names),
-                         "🟢 Boşaldı: F\nTekrar haber için: haberver")
+        at = datetime(2026, 11, 10, 15, 42, tzinfo=UTC)  # 18:42 local
+        self.assertEqual(notification_text(catalog[:2], at, 2, 4, "/", names, "ego"),
+                         "🟢 Ego 1, Ego 2 boşaldı · 18:42\nŞu an 2/4 boş · /durum ego\n"
+                         "Tekrar haber için: /haberver ego")
+        self.assertEqual(notification_text(catalog[2:], at, 3, 12, "", names, None),
+                         "🟢 F boşaldı · 18:42\nŞu an 3/12 boş · durum\n"
+                         "Tekrar haber için: haberver")
+
+
+class ShortRepliesTest(unittest.TestCase):
+    def test_subscribed_names_the_place_with_its_suffix(self):
+        self.assertEqual(subscribed_text("Ego", ["Ego 2"]),
+                         "Tamam: Ego'da bir priz boşalınca bir kez haber vereceğim.\n"
+                         "Şu an boş: Ego 2")
+        self.assertEqual(subscribed_text("F blok", []),
+                         "Tamam: F blok'ta bir priz boşalınca bir kez haber vereceğim.")
+        self.assertEqual(subscribed_text(None, []),
+                         "Tamam: bir AC priz boşalınca bir kez haber vereceğim.")
+
+    def test_unknown_location_suggests_typable_words(self):
+        self.assertEqual(unknown_location("xyz", ["arge", "ego", "f blok", "otopark"]),
+                         "'xyz' diye bir konum bulamadım.\n"
+                         "Şunlardan birini yaz: arge · ego · f blok · otopark")
+
+    def test_location_words_from_short_names(self):
+        groups = {"ego": {"e1", "e2"}, "f blok": {"f", "fb2"}, "f": {"f", "fb2"},
+                  "blok": {"f", "fb2"}, "arge": {"a", "o1"}, "arge otopark": {"o1"},
+                  "otopark": {"o1"}, "dc": set()}
+        words = location_words(["Ego 1", "Ego 2", "F Blok 2", "F", "3. Arge Otopark 1", "Arge",
+                                "DC", "DC 2"], lambda term: frozenset(groups[term]))
+        self.assertEqual(words, ["arge", "ego", "f blok", "otopark"])
 
 
 class HelpTextTest(unittest.TestCase):
     def test_lines_and_prefix(self):
         self.assertEqual(help_text("/"), "\n".join([
             "Komutlar", "",
-            "/durum – hangi priz boş",
+            "/durum [konum] – şu an hangi priz boş",
             "/haberver [konum] – boşalınca haber ver (ör. /haberver ego)",
             "/iptal – haber vermeyi kapat",
-            "/istatistik [konum] – takma ve alma saatleri",
-            "/analiz [konum] – prizler nasıl kullanılıyor, yorumlu",
-            "/grafik [tür] [konum] – grafik; tür: isi, saat, zaman, sure, site",
+            "/istatistik [konum] – şimdi gidersem boş bulur muyum",
+            "/analiz [konum] – geçmiş: ne zaman boş, kaç saat kalıyorlar",
+            "/grafik [tür] – resimli özet (harita, saat, zaman, sure, site)",
             "/tahmin 20 80 – süre, bitiş saati, ücret",
-            "/yardim – bu liste"]))
+            "/yardim – bu liste",
+            "",
+            "Konum yazman da yeter, ör. ego"]))
         self.assertNotIn("/", help_text(""))
+
+    def test_telegram_menu_uses_the_help_words(self):
+        commands = dict(bot_commands())
+        self.assertEqual(list(commands), ["durum", "haberver", "iptal", "istatistik", "analiz",
+                                          "grafik", "tahmin", "yardim"])
+        self.assertEqual(commands["durum"], "[konum] – şu an hangi priz boş")
+        lines = help_text("/").split("\n")
+        for name, description in commands.items():
+            self.assertTrue(f"/{name} {description}" in lines
+                            or f"/{name} – {description}" in lines, name)
+            self.assertTrue(3 <= len(description) <= 256)  # Telegram's limits
+
+    def test_chart_kinds_in_the_help_match_the_chart_book(self):
+        self.assertEqual(CHART_KINDS, ", ".join(k.key for k in ChartBook.kinds()))
 
 
 class StatsTextTest(unittest.TestCase):
+    NOW = datetime(2026, 11, 13, 14, 20, tzinfo=UTC)  # Friday 17:20 local
+
     def render(self, **overrides):
         catalog = [entry(i, f"Hacettepe Blok{i} - 1 Ac") for i in range(1, 8)]
         catalog.append(entry(8, "Hacettepe-F"))
         args = dict(
-            scope_label="tüm AC prizler", polls=(117, 0),
+            label="Hacettepe", now=self.NOW, current=NowCount(2, 8), wait=None,
+            grid=FreeGrid({(4, 17): FreeCell(3, 3, 1)}),
             plug_in=TimeDistribution(16, 0, [{12: 4, 15: 5, 17: 7, 9: 1}.get(h, 0)
                                              for h in range(24)], [0] * 7),
             unplug=TimeDistribution(0, 0, [0] * 24, [0] * 7),
             durations=DurationSummary(8, 0, 123.0, 112.0, 259.0),
             shares=[ConnectorShare(e, 10 + i, 100) for i, e in enumerate(catalog)],
-            grid=FreeGrid({(4, 17): FreeCell(3, 3, 1)}),
-            now=datetime(2026, 11, 13, 14, 20, tzinfo=UTC),  # Friday 17:20 local
-            wait=None, names=ShortNames(catalog))
+            coverage=Coverage(117, timedelta(hours=7), self.NOW, self.NOW, 1),
+            names=ShortNames(catalog))
         args.update(overrides)
-        return stats_text(**args)
+        return stats_text(StatsView(**args))
 
     def test_layout(self):
-        text = self.render()
-        self.assertEqual(text.split("\n\n")[0], "📊 Tüm AC prizler")
-        self.assertIn("Ne zaman takıyorlar? En çok 17:00, 15:00, 12:00", text)
-        self.assertIn("Ne zaman alıyorlar? veri yok", text)
-        self.assertIn("Ne kadar kalıyorlar? Genelde 2 sa 3 dk (çoğu 1 sa 52 dk – 4 sa 19 dk)",
-                      text)
-        self.assertIn("En sık boş olanlar\n██░░░░░░░░ %17 · F\n██░░░░░░░░ %16 · Blok7 1\n"
-                      "██░░░░░░░░ %15 · Blok6 1\n█░░░░░░░░░ %14 · Blok5 1\n"
-                      "█░░░░░░░░░ %13 · Blok4 1\n\n", text)  # top 5 only
-        self.assertIn("Boş priz bulma şansı · Cuma\n17:00 ██████████ %100\n"
-                      "18:00 ·········· veri yok\n19:00 ·········· veri yok\n", text)
-        self.assertIn("23:00 ·········· veri yok\nCmt 00:00 ·········· veri yok\n\n", text)
-        self.assertTrue(text.endswith("\n\nDayanak: 117 okuma, 16 takma, 0 alma, 8 oturum."))
-        self.assertNotIn("gözlem", text)
+        blocks = self.render().split("\n\n")
+        self.assertEqual(blocks[0], "📊 Hacettepe · şu an 2/8 priz boş")
+        self.assertEqual(blocks[1], "Boş priz bulma şansı · Cuma\n17:00 ██████████ %100\n"
+                                    "18:00 sonrası: henüz kayıt yok")
+        self.assertEqual(blocks[2], "Takma: en çok 16:00–18:00\nÇıkarma: henüz kayıt yok\n"
+                                    "Prizde kalma: genelde 2 sa 3 dk (çoğu 1 sa 52 dk – "
+                                    "4 sa 19 dk)")
+        self.assertEqual(blocks[3], "En sık boş olanlar\n██░░░░░░░░ %17 · F\n"
+                                    "██░░░░░░░░ %16 · Blok7 1\n██░░░░░░░░ %15 · Blok6 1\n"
+                                    "█░░░░░░░░░ %14 · Blok5 1\n█░░░░░░░░░ %13 · Blok4 1")
+        self.assertEqual(blocks[4], "7 saatlik kayda dayanıyor · 16 takma, 0 çıkarma, 8 araç.")
+        self.assertEqual(len(blocks), 5)
+
+    def test_hours_without_data_collapse_into_one_line(self):
+        grid = FreeGrid({(4, 17): FreeCell(1, 4, 1), (4, 20): FreeCell(2, 4, 1),
+                         (5, 0): FreeCell(1, 1, 1)})
+        lines = self.render(grid=grid).split("\n\n")[1].split("\n")
+        self.assertEqual(lines[1:], ["17:00 ███░░░░░░░ %25", "18:00–20:00: henüz kayıt yok",
+                                     "20:00 █████░░░░░ %50", "21:00–Cmt 00:00: henüz kayıt yok",
+                                     "Cmt 00:00 ██████████ %100"])
+        single = FreeGrid({(4, 17): FreeCell(1, 4, 1), (4, 19): FreeCell(0, 4, 1),
+                           **{(4, h): FreeCell(1, 1, 1) for h in range(20, 24)},
+                           (5, 0): FreeCell(1, 1, 1)})
+        self.assertIn("\n18:00: henüz kayıt yok\n", self.render(grid=single))
 
     def test_free_chance_borrows_the_same_hour_of_other_days(self):
         grid = FreeGrid({(4, 17): FreeCell(1, 4, 1), (2, 18): FreeCell(3, 4, 1),
                          (3, 18): FreeCell(0, 0, 0)})
         text = self.render(grid=grid)
         self.assertIn("17:00 ███░░░░░░░ %25\n18:00 ████████░░ %75≈\n", text)
-        self.assertIn("≈ bu gün için veri yok; diğer günlerin aynı saati", text)
+        self.assertIn("≈ bu gün için kayıt yok; diğer günlerin aynı saati", text)
         self.assertNotIn("≈ bu gün", self.render())  # nothing borrowed, no note
 
     def test_zero_percent_and_no_data_look_different(self):
         text = self.render(grid=FreeGrid({(4, 17): FreeCell(0, 5, 1)}))
-        self.assertIn("17:00 ░░░░░░░░░░ %0\n18:00 ·········· veri yok", text)
+        self.assertIn("17:00 ░░░░░░░░░░ %0\n18:00 sonrası: henüz kayıt yok", text)
 
-    def test_basis_line_failed_polls_and_uncertain(self):
-        text = self.render(polls=(117, 4),
-                           plug_in=TimeDistribution(16, 10, [0] * 24, [0] * 7),
-                           unplug=TimeDistribution(19, 0, [0] * 24, [0] * 7),
-                           durations=DurationSummary(8, 13, 123.0, None, None))
-        self.assertIn("Dayanak: 117 okuma, 16 takma, 19 alma, 8 oturum, 4 hata; "
-                      "23 belirsiz kayıt sayılmadı.", text)
-        self.assertIn("Genelde 2 sa 3 dk\n", text)  # no quartiles: no range
+    def test_thin_counts_say_so_instead_of_a_peak(self):
+        text = self.render(plug_in=TimeDistribution(3, 2, [0] * 24, [0] * 7),
+                           durations=DurationSummary(4, 13, 123.0, None, None))
+        self.assertIn("Takma: henüz az kayıt (3)\n", text)
+        self.assertIn("Prizde kalma: henüz az araç (4)", text)
+        self.assertNotIn("belirsiz", text)
 
-    def test_all_busy_wait_paragraph_comes_before_the_basis(self):
-        wait = WaitSummary(0, 0, 0, None, None, None)
-        paragraphs = self.render(wait=wait).split("\n\n")
-        self.assertEqual(paragraphs[-2],
-                         "Şu an hepsi dolu. Bu saat için geçmiş gün gözlemi yok.")
-        self.assertTrue(paragraphs[-1].startswith("Dayanak:"))
+    def test_all_busy_puts_the_wait_first(self):
+        text = self.render(current=NowCount(0, 4), wait=WaitSummary(0, 0, 0, None, None, None))
+        self.assertEqual(text.split("\n\n")[0], "📊 Hacettepe · şu an hepsi dolu\n"
+                                                 "Bu saat için geçmiş gün kaydı yok.")
 
-    def test_turkish_capital_i(self):
-        self.assertTrue(self.render(scope_label="incek (AC)").startswith("📊 İncek (AC)"))
+    def test_no_current_reading_and_no_record(self):
+        text = self.render(current=None, coverage=Coverage(0, timedelta(0), None, None, 0))
+        self.assertTrue(text.startswith("📊 Hacettepe\n\n"))
+        self.assertTrue(text.endswith("\n\nHenüz kayıt yok."))
+
+    def test_ranking_order_matches_the_analysis(self):
+        a, b = entry(1, "Site - B"), entry(2, "Site - A")
+        names = ShortNames([a, b])
+        text = self.render(shares=[ConnectorShare(a, 4, 100), ConnectorShare(b, 4, 100)],
+                           names=names)
+        self.assertIn("%4 · A\n░░░░░░░░░░ %4 · B", text)  # equal shares: by name
+
+
+class MissingTextTest(unittest.TestCase):
+    def test_grouped_by_what_each_waits_for(self):
+        missing = [Missing("occupancy", "prizde kalma süreleri", "5 araç", "3"),
+                   Missing("free_hours_Hafta sonu", "Hafta sonu kaydı henüz yok."),
+                   Missing("turnover", "priz başına kullanım", "1 günlük kayıt"),
+                   Missing("long_occupancy", "prizde kalma süreleri", "5 araç", "3"),
+                   Missing("sites", "site karşılaştırması", "1 günlük kayıt"),
+                   Missing("week_change", "haftalık değişim", "2 haftalık kayıt")]
+        self.assertEqual(missing_text(missing),
+                         "⏳ 5 araç dolunca (şu an 3): prizde kalma süreleri. 1 günlük kayıt "
+                         "dolunca: priz başına kullanım, site karşılaştırması. 2 haftalık "
+                         "kayıt dolunca: haftalık değişim. Hafta sonu kaydı henüz yok.")
 
 
 class EstimateTextTest(unittest.TestCase):
@@ -215,8 +315,8 @@ class EstimateTextTest(unittest.TestCase):
             "🔋 %32 → %100",
             "⏱ 7 sa 24 dk · bugün 23:24'te hazır",
             "💰 ~600 TL",
-            "⚡ 64.6 kWh, 10.6 kW ile",
-            "Not: 2 TL hizmet bedeli hesaba katılmadı."]))
+            "⚡ 64,6 kWh, 10,6 kW ile",
+            "Not: 2 TL hizmet bedeli dahil değil."]))
 
     def test_day_words(self):
         self.assertIn("yarın 02:00'de hazır", estimate_text(self.estimate(10), self.NOW))

@@ -53,8 +53,10 @@ class SlackClient(Protocol):
     def post_message(self, channel_id: str, text: str) -> str:
         """Posts plain text; returns the message ts."""
 
-    def upload_file(self, channel_id: str, data: bytes, filename: str, title: str) -> None:
-        """Shares a file in the channel (needs the files:write scope)."""
+    def upload_file(self, channel_id: str, data: bytes, filename: str, title: str,
+                    comment: str = "") -> None:
+        """Shares a file in the channel (needs the files:write scope); `comment` is posted
+        with it as plain text."""
 
 
 def ts_key(ts: str) -> Decimal:
@@ -103,15 +105,18 @@ class HttpSlackClient:
             "channel": channel_id, "text": escape(text), "mrkdwn": "false",
             "unfurl_links": "false", "unfurl_media": "false"})["ts"]
 
-    def upload_file(self, channel_id: str, data: bytes, filename: str, title: str) -> None:
+    def upload_file(self, channel_id: str, data: bytes, filename: str, title: str,
+                    comment: str = "") -> None:
         """Slack's external upload flow: ask for an upload URL, send the bytes there, then
         complete the upload into the channel. files.upload is retired for new apps."""
         target = self._call("files.getUploadURLExternal",
                             {"filename": filename, "length": str(len(data))})
         self._send_bytes(target["upload_url"], data)
-        self._call("files.completeUploadExternal", {
-            "files": json.dumps([{"id": target["file_id"], "title": title}]),
-            "channel_id": channel_id})
+        params = {"files": json.dumps([{"id": target["file_id"], "title": title}]),
+                  "channel_id": channel_id}
+        if comment:
+            params["initial_comment"] = escape(comment)
+        self._call("files.completeUploadExternal", params)
 
     def _send_bytes(self, upload_url: str, data: bytes) -> None:
         """The upload URL is pre-signed by Slack; the bot token is not sent there."""

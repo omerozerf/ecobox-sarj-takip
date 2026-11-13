@@ -7,10 +7,14 @@ command is written (`/durum` in Telegram, `durum` in Slack), carried by `Convers
 Every command shows the display scope (Hacettepe by default). `analiz` and `grafik` also
 accept a location outside it, since every Ecobox site is recorded: a term that matches
 nothing in the display scope is looked up across the whole recording.
+
+A message that is no command but names a location of the display scope as a whole word
+("ego", "f blok boş mu") is answered as `durum <that location>`; anything else gets the short
+"unknown command" reply.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from ecobox import texts
@@ -21,8 +25,8 @@ from ecobox.fmt import capitalised
 from ecobox.insights import InsightEngine
 from ecobox.labels import ShortNames
 from ecobox.records import CatalogEntry
-from ecobox.replies import Reply
-from ecobox.reports import stats_report
+from ecobox.replies import Image, Reply
+from ecobox.reports import scope_label, stats_report
 from ecobox.scope import fold
 from ecobox.state import AVAILABLE
 from ecobox.stats import Selection, Statistics
@@ -92,16 +96,30 @@ class CommandHandler:
         name, args = parse_command(text)
         handler = self._commands.get(name)
         if handler is None:
-            return Reply(texts.unknown_command(conversation.command_prefix))
+            term = self._scope.recognise(text)
+            if term is None:
+                return Reply(texts.unknown_command(conversation.command_prefix))
+            handler, args = self._status, term
         answer = handler(args, conversation)
         return answer if isinstance(answer, Reply) else Reply(answer)
 
     def _help(self, _: str, conversation: Conversation) -> str:
         return texts.help_text(conversation.command_prefix)
 
-    def _status(self, _: str, __: Conversation) -> str:
-        return texts.status_text(self._scope.current_status(), self._clock.now(),
-                                 self._scope.names())
+    def _status(self, args: str, conversation: Conversation) -> str:
+        term = args or None
+        selection = self._scope.selection(term)
+        if term is not None and not self._stats.entries(selection):
+            return self._unknown_location(term)
+        statuses = self._scope.statuses(term)
+        now = self._clock.now()
+        free_soon = None
+        if statuses and not any(s.state == AVAILABLE for s in statuses if s.entry.is_ac):
+            free_soon = texts.free_soon_text(self._stats.wait_until_free(selection, now),
+                                             self._insights.thresholds.min_wait_days,
+                                             conversation.command_prefix, term)
+        return texts.status_text(statuses, now, self._scope.names(),
+                                 capitalised(term) if term else None, free_soon)
 
     def _subscribe(self, args: str, conversation: Conversation) -> str:
         term = args or None
@@ -114,20 +132,22 @@ class CommandHandler:
         names = self._scope.names()
         free = [names.of(s.entry) for s in self._scope.current_status()
                 if s.entry.connector_id in ids and s.state == AVAILABLE]
-        return texts.subscribed_text(term, free)
+        return texts.subscribed_text(capitalised(term) if term else None, free)
 
     def _unsubscribe(self, _: str, conversation: Conversation) -> str:
         removed = self._storage.remove_subscriptions(conversation.transport,
                                                      conversation.chat_id)
-        return "Abonelik iptal edildi." if removed else "Aktif abonelik yok."
+        if removed:
+            return texts.UNSUBSCRIBED
+        return texts.no_subscription(conversation.command_prefix)
 
     def _statistics(self, args: str, _: Conversation) -> str:
         term = args or None
         selection = self._scope.selection(term)
         if not self._stats.entries(selection):
             return self._unknown_location(term)
-        return stats_report(self._stats, self._storage, self._scope, selection,
-                            f"{term} (AC)" if term else "tüm AC prizler", self._clock.now())
+        return stats_report(self._stats, self._scope, selection, scope_label(self._scope, term),
+                            self._clock.now())
 
     def _analysis(self, args: str, _: Conversation) -> str:
         target = self._target(args or None)
@@ -152,10 +172,9 @@ class CommandHandler:
             images = self._charts.build(kind, request)
         except ChartsUnavailable:
             return texts.CHARTS_UNAVAILABLE
-        others = " · ".join(k.key for k in self._charts.kinds() if k is not kind)
-        return Reply(f"📈 {target.label}: {kind.description}\n"
-                     f"Diğer grafikler ({conversation.command_prefix}grafik <tür>): {others}",
-                     tuple(images))
+        others = texts.other_charts_line(conversation.command_prefix,
+                                         [k.key for k in self._charts.kinds() if k is not kind])
+        return Reply("", _with_footer(images, others))
 
     def _target(self, term: str | None) -> Target | None:
         """The display scope, narrowed by `term`; else `term` across every recorded site."""
@@ -197,8 +216,13 @@ class CommandHandler:
         return entries[0] if entries else None
 
     def _unknown_location(self, term: str | None) -> str:
-        locations = sorted({e.location_name
-                            for e in self._scope.selection().apply(self._storage.catalog())})
-        if not locations:
-            return "Henüz istasyon listesi kaydedilmedi."
-        return texts.no_match_text(term, locations)
+        if not self._scope.selection().apply(self._storage.catalog()):
+            return texts.NO_CATALOG
+        return texts.unknown_location(term, self._scope.location_terms())
+
+
+def _with_footer(images: list[Image], footer: str) -> tuple[Image, ...]:
+    """The charts go out as photos alone: the first caption carries the pointer to the other
+    chart kinds, so no separate text message repeats what the image already says."""
+    first = images[0]
+    return (replace(first, caption=f"{first.caption}\n{footer}"), *images[1:])

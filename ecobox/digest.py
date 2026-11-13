@@ -1,4 +1,5 @@
-"""Weekly digest: the week's findings plus the heatmap, sent on its own to every transport.
+"""Weekly digest: the week's findings (its change first) plus that week's gün × saat chart,
+sent on its own to every transport.
 
 It goes out at the first check on or after the configured local weekday and hour of each ISO
 week (so a Mac asleep at that moment sends it when it wakes, still once that week), and only
@@ -92,7 +93,7 @@ class WeeklyDigest:
 
 
 class DigestComposer:
-    """Builds the digest reply: the last seven days' findings and the heatmap."""
+    """Builds the digest reply: the last seven days' findings and their gün × saat chart."""
 
     def __init__(self, insights: InsightEngine, charts: ChartBook, scope: DisplayScope):
         self._insights = insights
@@ -104,7 +105,8 @@ class DigestComposer:
         selection, names = self._scope.selection(), self._scope.names()
         analysis = self._insights.analyse(selection, self._scope.label, names, now, since)
         text = texts.digest_text(analysis, since, now)
-        request = ChartRequest(selection, self._scope.label, names, now)
+        # The image covers the same seven days as the text, not the analysis window.
+        request = ChartRequest(selection, self._scope.label, names, now, since)
         try:
             images = self._charts.build(self._charts.kinds()[0], request)
         except ChartsUnavailable:

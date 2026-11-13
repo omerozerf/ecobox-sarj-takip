@@ -20,7 +20,7 @@ class Outbox(Protocol):
     def send(self, chat_id: int | str, text: str) -> None: ...
 
     def send_reply(self, chat_id: int | str, reply: Reply) -> None:
-        """The text first, then each image with its caption."""
+        """The text (a chart reply has none), then each image with its caption."""
 
 
 class SubscriptionNotifier:
@@ -33,11 +33,13 @@ class SubscriptionNotifier:
 
     def on_transitions(self, transitions: list[Transition]) -> None:
         """Recorder listener: fire and clear subscriptions when an AC socket frees up."""
-        freed_ids = {t.connector_id for t in transitions
-                     if t.prev_state is not None and t.prev_state != AVAILABLE
-                     and t.new_state == AVAILABLE}
-        if not freed_ids:
+        freed = [t for t in transitions
+                 if t.prev_state is not None and t.prev_state != AVAILABLE
+                 and t.new_state == AVAILABLE]
+        if not freed:
             return
+        freed_ids = {t.connector_id for t in freed}
+        at = max(t.ts for t in freed)
         catalog = self._storage.catalog()
         names = self._scope.names()
         for subscription in self._storage.subscriptions():
@@ -50,9 +52,12 @@ class SubscriptionNotifier:
                        .apply(catalog) if e.connector_id in freed_ids]
             if not entries:
                 continue
+            term = subscription.location_term
+            ac_now = [st for st in self._scope.statuses(term) if st.entry.is_ac]
+            free_now = sum(st.state == AVAILABLE for st in ac_now)
             try:
-                outbox.send(subscription.chat_id,
-                            texts.notification_text(entries, outbox.command_prefix, names))
+                outbox.send(subscription.chat_id, texts.notification_text(
+                    entries, at, free_now, len(ac_now), outbox.command_prefix, names, term))
             except Exception:  # keep the subscription; the next freeing retries it
                 log.exception("notification to subscription %s failed", subscription.id)
                 continue

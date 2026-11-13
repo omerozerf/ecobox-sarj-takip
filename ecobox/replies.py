@@ -9,10 +9,11 @@ class Image:
     """PNG bytes."""
     filename: str
     caption: str
-    """One short line shown under the image."""
+    """Shown under the image: the chart's takeaway, at most a few short lines."""
 
 
 @dataclass(frozen=True)
 class Reply:
     text: str
+    """Empty for a reply that is its images alone (charts)."""
     images: tuple[Image, ...] = ()

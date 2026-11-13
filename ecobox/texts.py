@@ -1,22 +1,29 @@
 """Turkish user-facing text for the bot and the CLI.
 
 Plain text only: the same string goes to Telegram, Slack and the terminal. Every reply puts
-the answer first and keeps each line short.
+the answer first and keeps each line short (a phone shows about 34 characters per line). The
+reader is addressed as "sen" everywhere, error and set-up messages included.
+
+One vocabulary throughout: a use of a socket is a car ("araç"), its events are plugging in
+and unplugging ("takma / çıkarma"), and how much data a figure rests on is "N saatlik/günlük
+kayıt".
 """
 
 from datetime import datetime, timedelta
 
 from ecobox.clock import local_bucket, to_local
 from ecobox.estimate import ChargeEstimate
-from ecobox.fmt import (bar, capitalised, duration_text, minutes_text,  # noqa: F401
-                        percent, span_adjective, span_text)
+from ecobox.fmt import (bar, capitalised, decimal, duration_text, hour_range, locative,
+                        minutes_text, number_locative, percent, span_adjective)
 from ecobox.importer import ImportResult
-from ecobox.insights import Analysis
+from ecobox.insights import Analysis, Finding, Missing, Thresholds, peak_window
 from ecobox.labels import ShortNames
+from ecobox.ranking import by_free_share
 from ecobox.records import CatalogEntry, CurrentStatus
 from ecobox.state import AVAILABLE, CHARGING, FAULTED, MAINTENANCE, OFFLINE, UNAVAILABLE
 from ecobox.stats import (ConnectorShare, Coverage, DurationSummary, FreeCell, FreeGrid,
                           TimeDistribution, WaitSummary)
+from ecobox.stats_view import StatsView
 
 STATE_TR = {
     AVAILABLE: "boş",
@@ -37,27 +44,41 @@ TOP_SHARES = 5
 FREE_CHANCE_HOURS = 8
 SETTLED_DAYS = 7
 """Below this many observed days the analysis says the picture is still forming."""
+DIGEST_FINDINGS = 4
+NO_RECORD = "henüz kayıt yok"
+LOCATION_EXAMPLE = "ego"
 
-# Locative suffix (-de/-da/-te/-ta) of the last number word when a clock time is read aloud:
-# 23:25 is "yirmi üç yirmi beş", so it takes the suffix of "beş": "23:25'te".
-_LOCATIVE_BY_UNIT = {1: "de", 2: "de", 3: "te", 4: "te", 5: "te", 6: "da", 7: "de", 8: "de",
-                     9: "da"}
-_LOCATIVE_BY_TENS = {0: "da", 1: "da", 2: "de", 3: "da", 4: "ta", 5: "de"}  # sıfır, on, yirmi...
+# (command, arguments, what it answers): the help text and Telegram's "/" menu both read it.
+COMMANDS = (
+    ("durum", "[konum]", "şu an hangi priz boş"),
+    ("haberver", "[konum]", "boşalınca haber ver (ör. {p}haberver ego)"),
+    ("iptal", "", "haber vermeyi kapat"),
+    ("istatistik", "[konum]", "şimdi gidersem boş bulur muyum"),
+    ("analiz", "[konum]", "geçmiş: ne zaman boş, kaç saat kalıyorlar"),
+    ("grafik", "[tür]", "resimli özet ({kinds})"),
+    ("tahmin", "20 80", "süre, bitiş saati, ücret"),
+    ("yardim", "", "bu liste"),
+)
+CHART_KINDS = "harita, saat, zaman, sure, site"
+
+
+def _command_description(arguments: str, answer: str, prefix: str) -> str:
+    answer = answer.format(p=prefix, kinds=CHART_KINDS)
+    return f"{arguments} – {answer}" if arguments else answer
 
 
 def help_text(prefix: str) -> str:
     """Command list; `prefix` is how the transport expects commands ("/" or "")."""
-    p = prefix
-    return f"""Komutlar
+    lines = [f"{prefix}{name}{' ' if args else ' – '}"
+             + _command_description(args, answer, prefix)
+             for name, args, answer in COMMANDS]
+    return "\n".join(["Komutlar", "", *lines, "",
+                      f"Konum yazman da yeter, ör. {LOCATION_EXAMPLE}"])
 
-{p}durum – hangi priz boş
-{p}haberver [konum] – boşalınca haber ver (ör. {p}haberver ego)
-{p}iptal – haber vermeyi kapat
-{p}istatistik [konum] – takma ve alma saatleri
-{p}analiz [konum] – prizler nasıl kullanılıyor, yorumlu
-{p}grafik [tür] [konum] – grafik; tür: isi, saat, zaman, sure, site
-{p}tahmin 20 80 – süre, bitiş saati, ücret
-{p}yardim – bu liste"""
+
+def bot_commands() -> list[tuple[str, str]]:
+    """(command, description) pairs for Telegram's command menu, same words as the help."""
+    return [(name, _command_description(args, answer, "/")) for name, args, answer in COMMANDS]
 
 
 HELP = help_text("/")
@@ -67,7 +88,7 @@ REFUSED = "Bu bot özel kullanım içindir."
 
 def onboarding(chat_id: int) -> str:
     return (f"Bu sohbetin chat id'si: {chat_id}\n\n"
-            "Botu açmak için .env dosyasına şu satırı ekleyip servisi yeniden başlatın:\n"
+            "Botu açmak için .env dosyasına şu satırı ekle ve servisi yeniden başlat:\n"
             f"TELEGRAM_CHAT_ID={chat_id}\n\n"
             "O zamana kadar bot hiçbir komuta cevap vermez.")
 
@@ -78,6 +99,10 @@ def clock_text(moment: datetime) -> str:
 
 def currency_text(code: str) -> str:
     return "TL" if code == "TRY" else code
+
+
+def _command(prefix: str, name: str, term: str | None = None) -> str:
+    return f"{prefix}{name}" + (f" {term}" if term else "")
 
 
 # ----- durum ------------------------------------------------------------------------------
@@ -121,15 +146,19 @@ def _unavailable_lines(other: list[CurrentStatus], names: ShortNames) -> list[st
             for s in sorted(other, key=lambda s: names.of(s.entry))]
 
 
-def _headline(free: int, total: int) -> str:
+def _headline(free: int, total: int, label: str | None) -> str:
+    where = f"{label}: " if label else ""
     if free:
-        return f"🟢 {free}/{total} AC priz boş"
-    return f"🔴 Boş AC priz yok ({free}/{total})"
+        return f"🟢 {where}{free}/{total} AC priz boş"
+    if label:
+        return f"🔴 {label}: boş AC priz yok (0/{total})"
+    return f"🔴 Boş AC priz yok (0/{total})"
 
 
 def _last_read_line(newest: datetime, now: datetime) -> str:
     age = now - newest
-    line = f"Son okuma {clock_text(newest)} ({duration_text(age)} önce)"
+    ago = "az önce" if age < timedelta(minutes=1) else f"{duration_text(age)} önce"
+    line = f"Son okuma {clock_text(newest)} ({ago})"
     return f"⚠️ {line}, veri eski olabilir" if age > STALE_AFTER else line
 
 
@@ -137,34 +166,55 @@ def _section(title: str, lines: list[str]) -> str | None:
     return "\n".join([title, *lines]) if lines else None
 
 
-def status_text(statuses: list[CurrentStatus], now: datetime, names: ShortNames) -> str:
+def free_soon_text(wait: WaitSummary, min_days: int, prefix: str,
+                   term: str | None) -> str | None:
+    """"Bu saatte genelde 1 sa 10 dk içinde biri boşalıyor · /haberver"; None while fewer
+    than `min_days` past days had a measurable wait at this time of day."""
+    if wait.count < min_days:
+        return None
+    return (f"Bu saatte genelde {minutes_text(wait.median_min)} içinde biri boşalıyor · "
+            f"{_command(prefix, 'haberver', term)}")
+
+
+def status_text(statuses: list[CurrentStatus], now: datetime, names: ShortNames,
+                label: str | None = None, free_soon: str | None = None) -> str:
+    """`label` names a location the reply was narrowed to; `free_soon` is the history line
+    shown when no AC socket is free (see `free_soon_text`)."""
     if not statuses:
-        return "Henüz kayıtlı durum yok. Kaydedici ilk okumayı yapınca tekrar deneyin."
+        return "Henüz kayıtlı durum yok. Kaydedici ilk okumayı yapınca tekrar dene."
     ac = [s for s in statuses if s.entry.is_ac]
     dc = [s for s in statuses if not s.entry.is_ac]
     free = [s for s in ac if s.state == AVAILABLE]
     busy = [s for s in ac if s.state == CHARGING]
     other = [s for s in ac if s.state not in (AVAILABLE, CHARGING)]
     newest = max(s.sampled_at for s in statuses)
+    head = [_headline(len(free), len(ac), label), _last_read_line(newest, now)]
+    if free_soon and not free:
+        head.append(free_soon)
     blocks = [
-        _headline(len(free), len(ac)) + "\n" + _last_read_line(newest, now),
-        _section("Boş", _free_lines(free, names)),
-        _section("Dolu", _busy_lines(busy, names)),
+        "\n".join(head),
+        _section("Boş · ne zamandır", _free_lines(free, names)),
+        _section("Dolu · ne zamandır", _busy_lines(busy, names)),
         _section("Kullanılamıyor", _unavailable_lines(other, names)),
         f"⚡ DC: {sum(s.state == AVAILABLE for s in dc)}/{len(dc)} boş" if dc else None,
     ]
     return "\n\n".join(block for block in blocks if block)
 
 
-# ----- haberver and other short replies ----------------------------------------------------
+# ----- haberver, iptal and other short replies ---------------------------------------------
 
-def notification_text(entries: list[CatalogEntry], prefix: str, names: ShortNames) -> str:
+def notification_text(entries: list[CatalogEntry], at: datetime, free: int, total: int,
+                      prefix: str, names: ShortNames, term: str | None) -> str:
+    """Sent once when a subscribed socket frees up; keeps the location it was set up for."""
     freed = ", ".join(names.of(e) for e in entries)
-    return f"🟢 Boşaldı: {freed}\nTekrar haber için: {prefix}haberver"
+    return "\n".join([f"🟢 {freed} boşaldı · {clock_text(at)}",
+                      f"Şu an {free}/{total} boş · {_command(prefix, 'durum', term)}",
+                      f"Tekrar haber için: {_command(prefix, 'haberver', term)}"])
 
 
 def unknown_command(prefix: str) -> str:
-    return "Bu komutu tanımıyorum.\n\n" + help_text(prefix)
+    return (f"Bu komutu tanımıyorum.\nKomutlar için: {prefix}yardim\n"
+            f"Bir konum yazman da yeter, ör. {LOCATION_EXAMPLE}")
 
 
 def estimate_usage(prefix: str) -> str:
@@ -172,40 +222,60 @@ def estimate_usage(prefix: str) -> str:
             f"ör. {prefix}tahmin 20 80")
 
 
-def subscribed_text(term: str | None, free_names: list[str]) -> str:
-    where = f"{term} konumunda " if term else ""
-    reply = f"Tamam, {where}bir AC priz boşalınca bir kez haber vereceğim."
+def subscribed_text(label: str | None, free_names: list[str]) -> str:
+    where = f"{locative(label)} bir priz" if label else "bir AC priz"
+    reply = f"Tamam: {where} boşalınca bir kez haber vereceğim."
     if free_names:
         reply += "\nŞu an boş: " + ", ".join(free_names)
     return reply
 
 
-def no_match_text(term: str | None, locations: list[str]) -> str:
-    return f"'{term}' ile eşleşen AC priz yok. Konumlar:\n" + "\n".join(locations)
+UNSUBSCRIBED = "Tamam, artık haber vermeyeceğim."
+
+
+def no_subscription(prefix: str) -> str:
+    return f"Bekleyen bir haber isteğin yok. Kurmak için: {prefix}haberver"
+
+
+NO_CATALOG = "Henüz istasyon listesi kaydedilmedi. Kaydedici ilk kez çalışınca tekrar dene."
+
+
+def unknown_location(term: str | None, terms: list[str]) -> str:
+    head = f"'{term}' diye bir konum bulamadım." if term else "Bu konumu bulamadım."
+    if not terms:
+        return head
+    return f"{head}\nŞunlardan birini yaz: " + " · ".join(terms)
 
 
 # ----- istatistik -------------------------------------------------------------------------
 
-def _peak_hours_text(dist: TimeDistribution) -> str:
+def _events_text(dist: TimeDistribution, t: Thresholds) -> str:
+    """The same 2-hour window `analiz` names, once there are as many events as it needs."""
     if not dist.count:
-        return "veri yok"
-    return "En çok " + ", ".join(f"{h:02d}:00" for h, _ in dist.peak_hours())
+        return NO_RECORD
+    if dist.count < t.min_events:
+        return f"henüz az kayıt ({dist.count})"
+    hour, _ = peak_window(dist.by_hour)
+    return f"en çok {hour_range(hour, 2)}"
 
 
-def _stay_text(summary: DurationSummary) -> str:
+def _stay_text(summary: DurationSummary, t: Thresholds) -> str:
     if not summary.count:
-        return "veri yok"
-    text = f"Genelde {minutes_text(summary.median_min)}"
+        return "henüz ölçülen araç yok"
+    if summary.count < t.min_sessions:
+        return f"henüz az araç ({summary.count})"
+    text = f"genelde {minutes_text(summary.median_min)}"
     if summary.q1_min is not None and summary.q1_min != summary.q3_min:
         text += f" (çoğu {minutes_text(summary.q1_min)} – {minutes_text(summary.q3_min)})"
     return text
 
 
 def _share_lines(shares: list[ConnectorShare], names: ShortNames) -> list[str]:
-    ranked = sorted((s for s in shares if s.total), key=lambda s: s.share, reverse=True)
+    ranked = by_free_share((s for s in shares if s.total), lambda s: s.share,
+                           lambda s: names.of(s.entry))
     lines = [f"{bar(s.share)} {percent(s.share)} · {names.of(s.entry)}"
              for s in ranked[:TOP_SHARES]]
-    return lines or ["veri yok"]
+    return lines or [NO_RECORD]
 
 
 def _pooled(grid: FreeGrid, hour: int) -> FreeCell:
@@ -214,31 +284,58 @@ def _pooled(grid: FreeGrid, hour: int) -> FreeCell:
                     sum(c.days for c in cells))
 
 
-def _free_now_block(grid: FreeGrid, now: datetime) -> str:
-    """Bars for the next hours: that weekday's own figure, or the same hour on other days (≈)
-    when the weekday has none yet."""
+def _chance_rows(grid: FreeGrid, now: datetime) -> tuple[list[tuple[str, str | None]], bool]:
+    """(hour label, bar line or None for no data) for the next hours, and whether any row
+    borrowed the same hour of other weekdays."""
     weekday, hour = local_bucket(now)
-    lines, borrowed = [], False
+    rows, borrowed = [], False
     for offset in range(FREE_CHANCE_HOURS):
         h = (hour + offset) % 24
         wd = (weekday + (hour + offset) // 24) % 7
-        day = "" if wd == weekday else f"{WEEKDAYS_SHORT_TR[wd]} "
+        label = ("" if wd == weekday else f"{WEEKDAYS_SHORT_TR[wd]} ") + f"{h:02d}:00"
         cell, mark = grid.cell(wd, h), ""
         if not cell.total and _pooled(grid, h).total:
             cell, mark, borrowed = _pooled(grid, h), "≈", True
-        if cell.total:
-            lines.append(f"{day}{h:02d}:00 {bar(cell.probability)} "
-                         f"{percent(cell.probability)}{mark}")
+        line = (f"{bar(cell.probability)} {percent(cell.probability)}{mark}"
+                if cell.total else None)
+        rows.append((label, line))
+    return rows, borrowed
+
+
+def _collapsed(rows: list[tuple[str, str | None]]) -> list[str]:
+    """Bars as they are; each run of hours without data on one line."""
+    lines, index = [], 0
+    while index < len(rows):
+        label, line = rows[index]
+        if line is not None:
+            lines.append(f"{label} {line}")
+            index += 1
+            continue
+        end = index
+        while end + 1 < len(rows) and rows[end + 1][1] is None:
+            end += 1
+        if end == len(rows) - 1:
+            lines.append(f"{label} sonrası: {NO_RECORD}")
+        elif end == index:
+            lines.append(f"{label}: {NO_RECORD}")
         else:
-            lines.append(f"{day}{h:02d}:00 {bar(None)} veri yok")
-    title = f"Boş priz bulma şansı · {WEEKDAYS_TR[weekday]}"
-    note = ["≈ bu gün için veri yok; diğer günlerin aynı saati"] if borrowed else []
-    return "\n".join([title, *lines, *note])
+            lines.append(f"{label}–{rows[end + 1][0]}: {NO_RECORD}")
+        index = end + 1
+    return lines
+
+
+def _free_now_block(grid: FreeGrid, now: datetime) -> str:
+    """Bars for the next hours: that weekday's own figure, or the same hour on other days (≈)
+    when the weekday has none yet."""
+    rows, borrowed = _chance_rows(grid, now)
+    title = f"Boş priz bulma şansı · {WEEKDAYS_TR[local_bucket(now)[0]]}"
+    note = ["≈ bu gün için kayıt yok; diğer günlerin aynı saati"] if borrowed else []
+    return "\n".join([title, *_collapsed(rows), *note])
 
 
 def wait_text(summary: WaitSummary) -> str:
     if not summary.days_observed:
-        return "Bu saat için geçmiş gün gözlemi yok."
+        return "Bu saat için geçmiş gün kaydı yok."
     head = (f"Geçmiş {summary.days_observed} günün {summary.days_all_busy} gününde bu saatte "
             "hepsi doluydu.")
     if not summary.count:
@@ -249,54 +346,78 @@ def wait_text(summary: WaitSummary) -> str:
     return text + f"; {summary.count} güne dayanıyor."
 
 
-def _basis_text(polls: tuple[int, int], plug_in: TimeDistribution, unplug: TimeDistribution,
-                durations: DurationSummary) -> str:
-    ok, failed = polls
-    parts = [f"{ok} okuma", f"{plug_in.count} takma", f"{unplug.count} alma",
-             f"{durations.count} oturum"]
-    if failed:
-        parts.append(f"{failed} hata")
-    text = "Dayanak: " + ", ".join(parts)
-    uncertain = plug_in.excluded + unplug.excluded + durations.excluded
-    if uncertain:
-        text += f"; {uncertain} belirsiz kayıt sayılmadı"
-    return text + "."
+def _stats_head(view: StatsView) -> str:
+    head = f"📊 {view.label}"
+    if view.current is None:
+        return head
+    if view.current.all_busy:
+        return head + " · şu an hepsi dolu\n" + wait_text(view.wait)
+    return head + f" · şu an {view.current.free}/{view.current.total} priz boş"
 
 
-def stats_text(scope_label: str, polls: tuple[int, int], plug_in: TimeDistribution,
-               unplug: TimeDistribution, durations: DurationSummary,
-               shares: list[ConnectorShare], grid: FreeGrid, now: datetime,
-               wait: WaitSummary | None, names: ShortNames) -> str:
+def _stats_basis(cov: Coverage, view: StatsView) -> str:
+    if not cov.polls:
+        return "Henüz kayıt yok."
+    return (f"{capitalised(span_adjective(cov.days))} kayda dayanıyor · "
+            f"{view.plug_in.count} takma, {view.unplug.count} çıkarma, "
+            f"{view.durations.count} araç.")
+
+
+def stats_text(view: StatsView) -> str:
+    """`istatistik`: will I find a free socket if I go now, and in the next hours?"""
+    t = view.thresholds
     blocks = [
-        f"📊 {capitalised(scope_label)}",
-        "\n".join([f"Ne zaman takıyorlar? {_peak_hours_text(plug_in)}",
-                   f"Ne zaman alıyorlar? {_peak_hours_text(unplug)}",
-                   f"Ne kadar kalıyorlar? {_stay_text(durations)}"]),
-        _free_now_block(grid, now),
-        "\n".join(["En sık boş olanlar", *_share_lines(shares, names)]),
-        None if wait is None else "Şu an hepsi dolu. " + wait_text(wait),
-        _basis_text(polls, plug_in, unplug, durations),
+        _stats_head(view),
+        _free_now_block(view.grid, view.now),
+        "\n".join([f"Takma: {_events_text(view.plug_in, t)}",
+                   f"Çıkarma: {_events_text(view.unplug, t)}",
+                   f"Prizde kalma: {_stay_text(view.durations, t)}"]),
+        "\n".join(["En sık boş olanlar", *_share_lines(view.shares, view.names)]),
+        _stats_basis(view.coverage, view),
     ]
-    return "\n\n".join(block for block in blocks if block)
+    return "\n\n".join(blocks)
 
 
-# ----- analiz, grafik, haftalık özet -----------------------------------------------------
+# ----- analiz, haftalık özet ---------------------------------------------------------------
 
 def _analysis_head(analysis: Analysis) -> str:
     cov = analysis.coverage
     if not cov.polls:
         return f"🔎 {analysis.label}\nHenüz kayıt yok. Kaydedici veri topladıkça analiz dolacak."
     head = (f"🔎 {analysis.label} · {analysis.sockets} AC priz\n"
-            f"{span_adjective(cov.days)} veriye dayanıyor ({cov.polls} okuma).")
+            f"{capitalised(span_adjective(cov.days))} kayda dayanıyor.")
     if cov.days < SETTLED_DAYS:
-        head += " Veri biriktikçe yorumlar netleşecek."
+        head += " Kayıt biriktikçe yorumlar netleşecek."
     return head
 
 
+def _finding_block(finding: Finding) -> str:
+    return f"{finding.emoji} {finding.text}\n↳ {finding.basis}"
+
+
+def missing_text(missing: list[Missing]) -> str:
+    """"⏳ 5 araç dolunca (şu an 3): prizde kalma süreleri. 1 günlük kayıt dolunca: …":
+    what is still missing, grouped by the data it waits for."""
+    groups: dict[str, list[Missing]] = {}
+    notes: list[str] = []
+    for item in missing:
+        if item.needs is None:
+            notes.append(item.topic)
+        else:
+            groups.setdefault(item.needs, []).append(item)
+    sentences = []
+    for needs, items in groups.items():
+        current = next((m.current for m in items if m.current is not None), None)
+        now = f" (şu an {current})" if current is not None else ""
+        topics = list(dict.fromkeys(m.topic for m in items))
+        sentences.append(f"{capitalised(needs)} dolunca{now}: {', '.join(topics)}.")
+    return "⏳ " + " ".join(sentences + notes)
+
+
 def analysis_body(analysis: Analysis) -> list[str]:
-    blocks = [f"{f.emoji} {f.text}\n↳ {f.basis}" for f in analysis.findings]
+    blocks = [_finding_block(f) for f in analysis.findings]
     if analysis.missing:
-        blocks.append("\n".join(["⏳ Henüz erken:", *(f"· {m.text}" for m in analysis.missing)]))
+        blocks.append(missing_text(analysis.missing))
     return blocks
 
 
@@ -311,16 +432,32 @@ def _date_text(moment: datetime) -> str:
     return f"{local.day} {MONTHS_TR[local.month - 1]}"
 
 
-def digest_text(analysis: Analysis, since: datetime, now: datetime) -> str:
-    last_day = now - timedelta(seconds=1)
-    head = (f"📬 Haftalık özet · {_date_text(since)} – {_date_text(last_day)}\n"
-            f"{analysis.label} · {analysis.sockets} AC priz · "
-            f"{span_text(analysis.coverage.days)} gözlem")
-    return "\n\n".join([head, *analysis_body(analysis)])
+def _date_range(first: datetime, last: datetime) -> str:
+    """"6–12 Kasım"; "30 Ekim – 5 Kasım" across months."""
+    a, b = to_local(first), to_local(last)
+    if (a.year, a.month) == (b.year, b.month):
+        return f"{a.day}–{b.day} {MONTHS_TR[b.month - 1]}"
+    return f"{_date_text(first)} – {_date_text(last)}"
 
+
+def digest_findings(findings: list[Finding]) -> list[Finding]:
+    """The week's change first, then the rest in rule order; at most `DIGEST_FINDINGS`."""
+    ordered = sorted(findings, key=lambda f: f.key != "week_change")
+    return ordered[:DIGEST_FINDINGS]
+
+
+def digest_text(analysis: Analysis, since: datetime, now: datetime) -> str:
+    """The weekly digest: no "still missing" block, which would repeat every week."""
+    head = (f"📬 Haftalık özet · {_date_range(since, now - timedelta(seconds=1))}\n"
+            f"{analysis.label} · {analysis.sockets} AC priz · "
+            f"{span_adjective(analysis.coverage.days)} kayıt")
+    return "\n\n".join([head, *map(_finding_block, digest_findings(analysis.findings))])
+
+
+# ----- grafik -----------------------------------------------------------------------------
 
 CHARTS_UNAVAILABLE = ("Grafik çizilemiyor: matplotlib kurulu değil. Kurmak için "
-                      "scripts/setup_venv.sh çalıştırın ve servisi .venv ile yeniden başlatın "
+                      "scripts/setup_venv.sh çalıştır ve servisi .venv ile yeniden başlat "
                       "(scripts/install_launchd.sh). Metin komutları çalışmaya devam ediyor.")
 
 
@@ -328,7 +465,7 @@ def image_failed(missing_scope: bool) -> str:
     if missing_scope:
         return ("Grafik gönderilemedi: Slack uygulamasına files:write izni eklenmeli "
                 "(README, Slack botunu kurma).")
-    return "Grafik gönderilemedi; biraz sonra tekrar deneyin."
+    return "Grafik gönderilemedi; biraz sonra tekrar dene."
 
 
 def chart_usage(prefix: str, kinds: list[tuple[str, str]]) -> str:
@@ -338,14 +475,16 @@ def chart_usage(prefix: str, kinds: list[tuple[str, str]]) -> str:
                       "", "Türler", *lines])
 
 
+def other_charts_line(prefix: str, keys: list[str]) -> str:
+    return f"Diğer: {prefix}grafik " + " · ".join(keys)
+
+
 # ----- tahmin -----------------------------------------------------------------------------
 
 def _locative(moment: datetime) -> str:
     """'te/'de/'da/'ta by the last number word of the time read aloud (23:25 -> 'te)."""
     local = to_local(moment)
-    number = local.minute or local.hour  # 17:00 is read "on yedi": the hour
-    suffix = _LOCATIVE_BY_UNIT[number % 10] if number % 10 else _LOCATIVE_BY_TENS[number // 10]
-    return "'" + suffix
+    return number_locative(local.minute or local.hour)  # 17:00 is read "on yedi": the hour
 
 
 def _day_word(moment: datetime, now: datetime) -> str:
@@ -368,20 +507,21 @@ def estimate_text(estimate: ChargeEstimate, now: datetime) -> str:
         lines.append("💰 tarife bilinmiyor")
     else:
         lines.append(f"💰 ~{round(estimate.cost)} {currency_text(estimate.currency)}")
-    lines.append(f"⚡ {estimate.energy_kwh:.1f} kWh, {estimate.effective_kw:g} kW ile")
+    lines.append(f"⚡ {decimal(estimate.energy_kwh)} kWh, {decimal(estimate.effective_kw)} kW ile")
     if estimate.service_price:
-        lines.append(f"Not: {estimate.service_price:g} {currency_text(estimate.currency)} "
-                     "hizmet bedeli hesaba katılmadı.")
+        # Not added in: the API does not say whether it is per kWh or per session.
+        lines.append(f"Not: {decimal(estimate.service_price)} "
+                     f"{currency_text(estimate.currency)} hizmet bedeli dahil değil.")
     return "\n".join(lines)
 
 
 # ----- uzak kaynaktan içe aktarma ----------------------------------------------------------
 
 SNAPSHOT_IMPORT_DISABLED = ("ECOBOX_SNAPSHOT_REPO_URL boş: GitHub görüntüleri içe aktarılmıyor. "
-                            "Açmak için .env'e depo adresini yazın ya da --dir ile bir klasör "
-                            "verin.")
+                            "Açmak için .env'e depo adresini yaz ya da --dir ile bir klasör "
+                            "ver.")
 SNAPSHOT_IMPORT_NO_CATALOG = ("Katalog boş: önce `poll-once` ya da `run` ile istasyon listesini "
-                              "çekin. Görüntüler bir sonraki çalıştırmada alınır.")
+                              "çek. Görüntüler bir sonraki çalıştırmada alınır.")
 
 
 def _clock_date(moment: datetime) -> str:
@@ -392,7 +532,7 @@ def _clock_date(moment: datetime) -> str:
 def _coverage_line(label: str, cov: Coverage) -> str:
     if not cov.polls:
         return f"· {label}: kayıt yok"
-    return (f"· {label}: {cov.polls} okuma, {span_text(cov.days)} gözlem "
+    return (f"· {label}: {cov.polls} okuma, {span_adjective(cov.days)} kayıt "
             f"({_clock_date(cov.first)} – {_clock_date(cov.last)})")
 
 

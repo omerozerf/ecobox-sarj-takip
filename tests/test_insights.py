@@ -39,23 +39,24 @@ class FortnightTest(unittest.TestCase):
 
     def test_free_hours_weekday_and_weekend(self):
         weekday = self.findings["free_hours_Hafta içi"]
-        self.assertEqual(weekday.text, "Hafta içi boş priz bulmak en kolay 07:00–08:00 arası "
-                                       "(%100), en zor 09:00–10:00 arası (%50).")
-        self.assertEqual(weekday.basis, "12 saat dilimi · 5,6 gün gözlem")
+        self.assertEqual(weekday.text, "Hafta içi boş priz en kolay 07:00–08:00 (%100), en zor "
+                                       "09:00–10:00 (%50).")
+        self.assertEqual(weekday.basis, "12 saat dilimi · 5,6 günlük kayıt")
         weekend = self.findings["free_hours_Hafta sonu"]
         self.assertEqual(weekend.text, "Hafta sonu gözlenen her saatte boş priz bulma şansı %100.")
 
     def test_socket_ranking_names_the_faulted_socket(self):
         text = self.findings["socket_ranking"].text
-        self.assertTrue(text.startswith("En sık boş: Ego 2 %96, Ego 3 %85, F Blok 2 %85."), text)
-        self.assertIn("Neredeyse hiç boş değil: Ego 4 %0 (arızalı).", text)
-        self.assertTrue(text.endswith("İlk bakılacak yer: Ego 2."))
+        self.assertEqual(text, "İlk bakılacak yer: Ego 2 (zamanın %96'sında boş). Sonra Ego 3 "
+                               "%85, F Blok 2 %85. Nadiren boş: Ego 4 (%0, arızalı).")
+        self.assertEqual(self.findings["socket_ranking"].basis,
+                         "12 priz · her biri en az 5,6 gün kayıtlı")
 
     def test_occupancy_time(self):
         finding = self.findings["occupancy"]
-        self.assertEqual(finding.text, "Bir araç prizi genelde 5 sa işgal ediyor. Dolu bir "
+        self.assertEqual(finding.text, "Bir araç prizde genelde 5 sa kalıyor. Dolu bir "
                                        "prizin kısa sürede boşalmasını bekleme.")
-        self.assertEqual(finding.basis, "175 temiz oturum")
+        self.assertEqual(finding.basis, "175 araç")
 
     def test_arrivals_and_departures(self):
         finding = self.findings["arrivals"]
@@ -68,7 +69,7 @@ class FortnightTest(unittest.TestCase):
     def test_occupancy_by_arrival(self):
         finding = self.findings["occupancy_by_arrival"]
         self.assertEqual(finding.text, "Prizde kalma, geliş saatine göre: sabah 5 sa · öğle 5 sa.")
-        self.assertEqual(finding.basis, "105 + 70 temiz oturum")
+        self.assertEqual(finding.basis, "105 + 70 araç")
 
     def test_turnover_leaves_the_faulted_socket_to_reliability(self):
         text = self.findings["turnover"].text
@@ -80,7 +81,7 @@ class FortnightTest(unittest.TestCase):
 
     def test_long_occupancy(self):
         text = self.findings["long_occupancy"].text
-        self.assertTrue(text.startswith("Oturumların %86'sı 4 saatten uzun."))  # 150 of 175
+        self.assertTrue(text.startswith("Araçların %86'sı 4 saatten uzun kalıyor."))  # 150/175
 
     def test_reliability(self):
         self.assertEqual(self.findings["reliability"].text,
@@ -94,6 +95,8 @@ class FortnightTest(unittest.TestCase):
 
     def test_site_comparison_says_what_it_lacks(self):
         self.assertEqual([m.key for m in self.analysis.missing], ["sites"])
+        self.assertEqual(self.analysis.missing[0].text,
+                         "Diğer Ecobox siteleri henüz yeterince kaydedilmedi.")
 
     def test_findings_come_most_useful_first(self):
         keys = [f.key for f in self.analysis.findings]
@@ -103,12 +106,14 @@ class FortnightTest(unittest.TestCase):
 
     def test_rendered_reply(self):
         text = analysis_text(self.analysis)
-        self.assertTrue(text.startswith("🔎 Hacettepe · 12 AC priz\n5,6 günlük veriye "
-                                        "dayanıyor (2720 okuma)."))
+        self.assertTrue(text.startswith("🔎 Hacettepe · 12 AC priz\n5,6 günlük kayda "
+                                        "dayanıyor. Kayıt biriktikçe yorumlar netleşecek."))
         self.assertIn("\n\n🟢 Hafta içi boş priz", text)
         self.assertIn("\n↳ 12 saat dilimi", text)
-        self.assertTrue(text.endswith("⏳ Henüz erken:\n· Diğer sitelerle karşılaştırma: diğer "
-                                      "Ecobox siteleri henüz yeterince kaydedilmedi."))
+        self.assertTrue(text.endswith("\n\n⏳ Diğer Ecobox siteleri henüz yeterince "
+                                      "kaydedilmedi."))
+        for word in ("temiz oturum", "boşluklu", "belirsiz", "okuma", "işgal", "gözlem"):
+            self.assertNotIn(word, text)  # no internal terms reach the reader
 
     def test_digest_window_is_the_last_week(self):
         week = analyse(self.world, since=self.world.clock.now() - timedelta(days=7))
@@ -120,6 +125,39 @@ class FortnightTest(unittest.TestCase):
 
 
 class ThinDataTest(unittest.TestCase):
+    def test_a_day_or_two_is_told_as_so_far_not_as_a_weekday_rule(self):
+        world = World(datetime(2026, 11, 13, 8, 0, tzinfo=UTC))  # Friday 11:00 local
+        self.addCleanup(world.storage.close)
+        world.run(datetime(2026, 11, 13, 15, 0, tzinfo=UTC),
+                  lambda ts: {EGO[0]: "available" if ts.hour % 2 else "charging"})
+        [finding] = [f for f in analyse(world).findings if f.key.startswith("free_hours")]
+        self.assertTrue(finding.text.startswith("Şimdiye kadar (1 gün): boş priz en kolay "),
+                        finding.text)
+        self.assertNotIn("Hafta içi", finding.text)
+        self.assertNotIn("beklersin", finding.text)
+        self.assertEqual(finding.basis, "7 saatlik kayıt")
+        weekend = [m for m in analyse(world).missing if m.key == "free_hours_Hafta sonu"]
+        self.assertEqual(weekend[0].text, "Hafta sonu kaydı henüz yok.")
+
+    def test_from_three_dates_the_weekday_rule_and_its_advice(self):
+        world = World(datetime(2026, 11, 10, 6, 0, tzinfo=UTC))  # Tuesday 09:00 local
+        self.addCleanup(world.storage.close)
+        for day in range(3):
+            world.clock.current = datetime(2026, 11, 10 + day, 6, 0, tzinfo=UTC)
+            world.run(datetime(2026, 11, 10 + day, 10, 0, tzinfo=UTC),
+                      lambda ts: {cid: "charging" if ts.hour == 8 else "available"
+                                  for cid in EGO})
+        world.clock.advance(60)
+        engine = InsightEngine(Statistics(world.storage, GAP_S))
+        scope = display_scope(world)
+        analysis = engine.analyse(scope.selection("ego"), "Ego", scope.names(),
+                                  world.clock.now())
+        [finding] = [f for f in analysis.findings if f.key == "free_hours_Hafta içi"]
+        self.assertEqual(finding.text, "Hafta içi boş priz en kolay 09:00–10:00 (%100), en zor "
+                                       "11:00–12:00 (%0): o saatte gidersen büyük ihtimalle "
+                                       "beklersin.")
+
+
     def test_empty_database(self):
         world = World()
         self.addCleanup(world.storage.close)
@@ -141,14 +179,17 @@ class ThinDataTest(unittest.TestCase):
                                         "occupancy_by_arrival", "turnover", "long_occupancy",
                                         "reliability", "sites", "week_change"})
         self.assertEqual(missing["occupancy"],
-                         "Prizi işgal süresi: en az 5 temiz oturum gerekiyor (şu an 0).")
+                         "Prizde kalma süreleri: 5 araç gerekiyor (şu an 0).")
         self.assertEqual(missing["week_change"],
-                         "Haftalık değişim: iki haftalık veri gerekiyor (şu an 12 dakika).")
+                         "Haftalık değişim: 2 haftalık kayıt gerekiyor.")
         self.assertEqual(missing["turnover"],
-                         "Priz başına günlük kullanım: her priz için en az 1 günlük gözlem "
-                         "gerekiyor (şu an 12 dakika).")
+                         "Priz başına kullanım: 1 günlük kayıt gerekiyor.")
         for text in missing.values():
             self.assertNotIn("\n", text)  # one short line each
+        rendered = analysis_text(analysis)
+        self.assertEqual(rendered.count("⏳"), 1)  # one grouped paragraph
+        self.assertIn("5 araç dolunca (şu an 0): prizde kalma süreleri.", rendered)
+        self.assertLess(len(rendered.split("\n\n")[-1]), 400)
 
     def test_thresholds_are_the_switch(self):
         world = World()
@@ -165,6 +206,11 @@ class ThinDataTest(unittest.TestCase):
         self.assertIn("arrivals", {f.key for f in loose.findings})
 
 
+def short_comparison(world) -> InsightEngine:
+    """An engine that compares sites without waiting for a full day of common data."""
+    return InsightEngine(Statistics(world.storage, GAP_S), Thresholds(min_site_days=0))
+
+
 class SiteComparisonTest(unittest.TestCase):
     def test_hacettepe_against_the_other_sites(self):
         world = World(datetime(2026, 11, 13, 6, 0, tzinfo=UTC), record=EVERYTHING)
@@ -172,14 +218,15 @@ class SiteComparisonTest(unittest.TestCase):
         for _ in range(60):  # 3 hours of every site as in the fixture
             world.poll()
             world.clock.advance(POLL_S)
-        analysis = analyse(world)
+        [early] = [m for m in analyse(world).missing if m.key == "sites"]
+        self.assertEqual(early.text, "Site karşılaştırması: 1 günlük kayıt gerekiyor.")
+        # 3 hours is not a verdict; Hacettepe itself is short too, so no "ortak" yet
+        analysis = analyse(world, engine=short_comparison(world))
         [finding] = [f for f in analysis.findings if f.key == "sites"]
-        self.assertTrue(finding.text.startswith("Hacettepe AC prizlerinin doluluk oranı %92, "
-                                                "diğer Ecobox sitelerinde %27. "), finding.text)
-        self.assertIn(" site arasında yoğunlukta ", finding.text)
-        self.assertTrue(finding.text.endswith("Hacettepe ortalamadan belirgin yoğun."))
-        self.assertTrue(finding.basis.startswith("90 site, 145 AC priz · ortak 3 saat"),
-                        finding.basis)
+        self.assertEqual(finding.text, "Hacettepe'de AC prizler zamanın %92'sinde dolu; diğer "
+                                       "Ecobox sitelerinde ortalama %27. Hacettepe ortalamadan "
+                                       "belirgin yoğun.")  # no rank: one-socket sites skew it
+        self.assertEqual(finding.basis, "90 site, 145 AC priz · 3 saatlik ortak kayıt")
 
     def test_common_window_starts_when_the_other_sites_did(self):
         """The live database: Hacettepe recorded for hours, then every site from a restart."""
@@ -199,11 +246,43 @@ class SiteComparisonTest(unittest.TestCase):
             world.poll()
             world.clock.advance(POLL_S)
         self.assertEqual(stats.comparison_start(home, window_start), switched)
-        [finding] = [f for f in analyse(world).findings if f.key == "sites"]
-        self.assertIn("ortak 1 saat gözlem", finding.basis)  # not the 3 h of Hacettepe alone
+        [finding] = [f for f in analyse(world, engine=short_comparison(world)).findings
+                     if f.key == "sites"]
+        self.assertIn("1 saatlik ortak kayıt", finding.basis)  # not the 3 h of Hacettepe alone
+
+
+class RankingConsistencyTest(unittest.TestCase):
+    def test_istatistik_and_analiz_rank_the_same_sockets_the_same_way(self):
+        from helpers import make_commands
+        from ecobox.commands import Conversation
+        world = synthetic.two_office_weeks()
+        self.addCleanup(world.storage.close)
+        chat = Conversation("telegram", 1, "/")
+        commands = make_commands(world)
+        stats = commands.reply("/istatistik", chat).text
+        listed = [line.split(" · ")[1] for line in stats.split("En sık boş olanlar\n")[1]
+                  .split("\n\n")[0].split("\n")]
+        ranking = next(f.text for f in analyse(world).findings if f.key == "socket_ranking")
+        self.assertEqual(listed[:3], ["Ego 2", "Ego 3", "F Blok 2"])
+        self.assertTrue(ranking.startswith("İlk bakılacak yer: Ego 2 ") and
+                        "Sonra Ego 3 %85, F Blok 2 %85." in ranking, ranking)
+        for line in stats.split("\n"):
+            if line.startswith("Takma:"):
+                self.assertEqual(line, "Takma: en çok 07:00–09:00")  # analiz's window too
 
 
 class FormatTest(unittest.TestCase):
+    def test_locative_suffixes(self):
+        from ecobox.fmt import locative, percent_in
+        cases = {"Ego": "Ego'da", "Hacettepe": "Hacettepe'de", "F blok": "F blok'ta",
+                 "F": "F'de", "Akıncı plaza": "Akıncı plaza'da", "Ego 2": "Ego 2'de",
+                 "İncek": "İncek'te", "Otopark": "Otopark'ta", "Ego 30": "Ego 30'da"}
+        for name, expected in cases.items():
+            self.assertEqual(locative(name), expected, name)
+        self.assertEqual([percent_in(v) for v in (0.58, 0.42, 1, 0.4, 0.3)],
+                         ["%58'inde", "%42'sinde", "%100'ünde", "%40'ında", "%30'unda"])
+
+
     def test_possessive_follows_the_last_number_word(self):
         cases = {1: "'i", 2: "'si", 3: "'ü", 4: "'ü", 5: "'i", 6: "'sı", 7: "'si", 8: "'i",
                  9: "'u", 10: "'u", 20: "'si", 30: "'u", 40: "'ı", 45: "'i", 50: "'si", 60: "'ı",

@@ -20,6 +20,9 @@ class TelegramClient(Protocol):
 
     def send_photo(self, chat_id: int, photo: bytes, filename: str, caption: str) -> None: ...
 
+    def set_my_commands(self, commands: list[tuple[str, str]]) -> None:
+        """Fills Telegram's "/" menu with (command, description) pairs."""
+
 
 def multipart(fields: dict[str, str], file_field: str, filename: str, data: bytes,
               content_type: str) -> tuple[bytes, str]:
@@ -55,6 +58,11 @@ class HttpTelegramClient:
         body, content_type = multipart({"chat_id": str(chat_id), "caption": caption}, "photo",
                                        filename, photo, "image/png")
         self._post("sendPhoto", body, content_type, self._http_timeout_s)
+
+    def set_my_commands(self, commands: list[tuple[str, str]]) -> None:
+        self._call("setMyCommands",
+                   {"commands": [{"command": c, "description": d} for c, d in commands]},
+                   self._http_timeout_s)
 
     def _call(self, method: str, params: dict[str, Any], timeout_s: float) -> Any:
         return self._post(method, json.dumps(params).encode(), "application/json", timeout_s)

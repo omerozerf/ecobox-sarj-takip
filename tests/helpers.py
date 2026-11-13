@@ -129,6 +129,8 @@ class FakeTelegram:
         self.updates: list[list[dict]] = []
         self.fail_send = False
         self.fail_photo = False
+        self.fail_commands = False
+        self.commands: list[tuple[str, str]] | None = None
 
     def get_updates(self, offset, timeout_s):
         return self.updates.pop(0) if self.updates else []
@@ -143,6 +145,12 @@ class FakeTelegram:
             from ecobox.telegram import TelegramError
             raise TelegramError("sendPhoto: HTTP 400")
         self.photos.append((chat_id, photo, filename, caption))
+
+    def set_my_commands(self, commands: list[tuple[str, str]]) -> None:
+        if self.fail_commands:
+            from ecobox.telegram import TelegramError
+            raise TelegramError("setMyCommands: HTTP 500")
+        self.commands = commands
 
 
 def message(chat_id: int, text: str, update_id: int = 1) -> dict:
@@ -208,6 +216,9 @@ class FakeRenderer:
         self.calls.append((name, *args))
         return PNG_SIGNATURE + name.encode()
 
+    def notice(self, title, subtitle, message):
+        return self._draw("notice", title, subtitle, message)
+
     def heatmap(self, grid, title, subtitle):
         return self._draw("heatmap", grid, title, subtitle)
 
@@ -220,8 +231,8 @@ class FakeRenderer:
     def occupancy(self, minutes, median, title, subtitle):
         return self._draw("occupancy", minutes, median, title, subtitle)
 
-    def sites(self, loads, others_share, title, subtitle):
-        return self._draw("sites", loads, others_share, title, subtitle)
+    def sites(self, bars, others_share, title, subtitle):
+        return self._draw("sites", bars, others_share, title, subtitle)
 
 
 class FakeSlack:
@@ -235,6 +246,7 @@ class FakeSlack:
         self.history_messages: list[dict] = []
         self.posted: list[tuple[str, str]] = []
         self.uploads: list[tuple[str, bytes, str, str]] = []
+        self.comments: list[str] = []
         self.taken_names: set[str] = set()
         self.fail_next: dict[str, Exception] = {}
         self._ts = 1762992000_000000  # microseconds; Slack ts is "seconds.micros"
@@ -275,9 +287,11 @@ class FakeSlack:
         self.posted.append((channel_id, text))
         return ts
 
-    def upload_file(self, channel_id: str, data: bytes, filename: str, title: str) -> None:
+    def upload_file(self, channel_id: str, data: bytes, filename: str, title: str,
+                    comment: str = "") -> None:
         self._enter("upload", channel_id, filename)
         self.uploads.append((channel_id, data, filename, title))
+        self.comments.append(comment)
         self.history_messages.append({"type": "message", "subtype": "file_share",
                                       "user": "UBOT", "ts": self.next_ts(), "text": ""})
 
