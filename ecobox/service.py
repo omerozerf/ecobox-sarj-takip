@@ -8,7 +8,7 @@ import logging
 import signal
 import threading
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import Callable, Protocol
 
 from ecobox.bot import TelegramBot
 from ecobox.clock import Clock
@@ -157,6 +157,23 @@ class SlackLoop:
             if delay is None:
                 return
             stop.wait(delay)
+
+
+class PeriodicLoop:
+    """Runs `step` every `interval_s`; a failing step is logged and retried next time."""
+
+    def __init__(self, name: str, step: Callable[[], object], interval_s: float):
+        self._name = name
+        self._step = step
+        self._interval = interval_s
+
+    def run(self, stop: threading.Event) -> None:
+        while not stop.is_set():
+            try:
+                self._step()
+            except Exception:
+                log.exception("%s step crashed", self._name)
+            stop.wait(self._interval)
 
 
 class StoppableLoop(Protocol):

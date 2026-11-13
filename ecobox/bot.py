@@ -5,7 +5,8 @@ from typing import Any
 
 from ecobox import texts
 from ecobox.commands import TELEGRAM, CommandHandler, Conversation
-from ecobox.telegram import TelegramClient
+from ecobox.replies import Reply
+from ecobox.telegram import TelegramClient, TelegramError
 
 log = logging.getLogger(__name__)
 
@@ -21,11 +22,23 @@ class TelegramOutbox:
     def send(self, chat_id: int | str, text: str) -> None:
         self._telegram.send_message(int(chat_id), text)
 
+    def send_reply(self, chat_id: int | str, reply: Reply) -> None:
+        self.send(chat_id, reply.text)
+        for image in reply.images:
+            try:
+                self._telegram.send_photo(int(chat_id), image.data, image.filename,
+                                          image.caption)
+            except TelegramError as exc:
+                log.warning("Telegram photo failed: %s", exc)
+                self.send(chat_id, texts.image_failed(missing_scope=False))
+                return
+
 
 class TelegramBot:
     def __init__(self, telegram: TelegramClient, commands: CommandHandler,
                  chat_id: int | None):
         self._telegram = telegram
+        self._outbox = TelegramOutbox(telegram)
         self._commands = commands
         self._chat_id = chat_id
 
@@ -42,4 +55,4 @@ class TelegramBot:
             self._telegram.send_message(chat_id, texts.REFUSED)
             return
         conversation = Conversation(TELEGRAM, chat_id, TELEGRAM_COMMAND_PREFIX)
-        self._telegram.send_message(chat_id, self._commands.reply(message["text"], conversation))
+        self._outbox.send_reply(chat_id, self._commands.reply(message["text"], conversation))

@@ -34,6 +34,9 @@ class Config:
     http_timeout_s: float = 20.0
     backoff_cap_s: int = 15 * 60
     scope_terms: tuple[str, ...] = ("hacettepe",)
+    """Display scope: what the bot commands and the default analysis show."""
+    record_scope_terms: tuple[str, ...] = ()
+    """Record scope: which charge points are sampled; empty means every Ecobox site."""
     telegram_token: str | None = None
     telegram_chat_id: int | None = None
     slack_token: str | None = None
@@ -44,6 +47,16 @@ class Config:
     kwh_per_percent: float = 0.95
     price_includes_vat: bool = True
     log_level: str = "INFO"
+    digest_weekday: int | None = 0
+    """Local weekday of the weekly digest, 0 = Monday; None turns the digest off."""
+    digest_hour: int = 9
+    digest_min_days: float = 3.0
+    """The digest stays silent while the display scope has fewer observed days than this."""
+    snapshot_repo_url: str | None = None
+    """Public git repository of the remote collector; None turns the snapshot import off."""
+    snapshot_branch: str = "data"
+    snapshot_checkout: Path = PROJECT_ROOT / "data" / "remote"
+    snapshot_import_interval_s: float = 3600.0
 
     @property
     def gap_threshold_s(self) -> float:
@@ -68,10 +81,10 @@ class Config:
         db_path = Path(get("ECOBOX_DB_PATH") or PROJECT_ROOT / "data" / "ecobox.sqlite3")
         if not db_path.is_absolute():
             db_path = PROJECT_ROOT / db_path
-        scope_raw = values.get("ECOBOX_SCOPE")
-        scope = cls.scope_terms if scope_raw is None else tuple(
-            t.strip() for t in scope_raw.split(",") if t.strip())
+        scope = _terms(values.get("ECOBOX_SCOPE"), cls.scope_terms)
+        record_scope = _terms(values.get("ECOBOX_RECORD_SCOPE"), cls.record_scope_terms)
         chat_id = get("TELEGRAM_CHAT_ID")
+        weekday = int(get("DIGEST_WEEKDAY") or 1)
         return cls(
             db_path=db_path,
             poll_interval_s=int(get("ECOBOX_POLL_INTERVAL_S") or cls.poll_interval_s),
@@ -80,6 +93,7 @@ class Config:
             http_timeout_s=float(get("ECOBOX_HTTP_TIMEOUT_S") or cls.http_timeout_s),
             backoff_cap_s=int(get("ECOBOX_BACKOFF_CAP_S") or cls.backoff_cap_s),
             scope_terms=scope,
+            record_scope_terms=record_scope,
             telegram_token=get("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=int(chat_id) if chat_id else None,
             slack_token=get("SLACK_BOT_TOKEN"),
@@ -92,4 +106,27 @@ class Config:
             price_includes_vat=(get("PRICE_INCLUDES_VAT") or "true").lower()
             in ("1", "true", "yes", "evet"),
             log_level=get("ECOBOX_LOG_LEVEL") or cls.log_level,
+            digest_weekday=_weekday(weekday),
+            digest_hour=int(get("DIGEST_HOUR") or cls.digest_hour),
+            digest_min_days=float(get("DIGEST_MIN_DAYS") or cls.digest_min_days),
+            snapshot_repo_url=get("ECOBOX_SNAPSHOT_REPO_URL"),
+            snapshot_branch=get("ECOBOX_SNAPSHOT_BRANCH") or cls.snapshot_branch,
+            snapshot_import_interval_s=float(get("ECOBOX_SNAPSHOT_IMPORT_S")
+                                             or cls.snapshot_import_interval_s),
         )
+
+
+def _terms(raw: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
+    """Comma-separated terms; a missing key keeps the default, an empty value means none."""
+    if raw is None:
+        return default
+    return tuple(t.strip() for t in raw.split(",") if t.strip())
+
+
+def _weekday(value: int) -> int | None:
+    """DIGEST_WEEKDAY is 1 (Pazartesi) .. 7 (Pazar); 0 turns the digest off."""
+    if value == 0:
+        return None
+    if not 1 <= value <= 7:
+        raise ValueError(f"DIGEST_WEEKDAY must be 0..7, got {value}")
+    return value - 1

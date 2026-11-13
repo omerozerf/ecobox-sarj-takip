@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Template: scripts/install_launchd.sh replaces __PROJECT_DIR__ and writes the result to
-     ~/Library/LaunchAgents/local.ecobox-sarj-takip.plist -->
+<!-- Template: scripts/install_launchd.sh replaces __PROJECT_DIR__ and __PYTHON__ (the
+     project's .venv interpreter when it exists, else /opt/homebrew/bin/python3) and writes the
+     result to ~/Library/LaunchAgents/local.ecobox-sarj-takip.plist -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
@@ -9,7 +10,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/bin/python3</string>
+        <string>__PYTHON__</string>
         <string>-m</string>
         <string>ecobox</string>
         <string>run</string>

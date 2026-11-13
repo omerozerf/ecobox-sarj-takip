@@ -15,11 +15,11 @@ current index: connectors appended later were not known yet.
 import json
 import sys
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ecobox.api import STATUS_PATH, HttpEcoboxApi
+from ecobox.api import HttpEcoboxApi
 
 INDEX_FILE = "connectors.json"
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -70,20 +70,20 @@ def append_snapshot(directory: Path, ts: datetime, rows: list[RawRow]) -> Path:
     return day_file
 
 
-def read_snapshots(directory: Path) -> Iterator[tuple[datetime, list[RawRow]]]:
-    """Every stored poll, oldest first."""
+def read_snapshots(directory: Path,
+                   since: date | None = None) -> Iterator[tuple[datetime, list[RawRow]]]:
+    """Every stored poll, oldest first; with `since`, only the UTC day files from that day on."""
     index = json.loads((directory / INDEX_FILE).read_text())
     for day_file in sorted(directory.glob("*.jsonl")):
+        if since is not None and day_file.stem < since.isoformat():
+            continue
         for line in day_file.read_text().splitlines():
             yield decode_line(line, index)
 
 
 def main(argv: list[str]) -> None:
     directory = Path(argv[1])
-    # The typed client drops the raw fields; its request helper is the one place that knows
-    # the headers and validates the envelope.
-    payload = HttpEcoboxApi(REQUEST_TIMEOUT_S)._request("GET", STATUS_PATH, None)
-    rows = payload["result"]
+    rows = HttpEcoboxApi(REQUEST_TIMEOUT_S).fetch_status_rows()
     day_file = append_snapshot(directory, datetime.now(timezone.utc), rows)
     print(f"{len(rows)} connectors appended to {day_file.name}")
 

@@ -8,29 +8,46 @@ Occupancy figures count samples, i.e. only moments that were actually observed.
 
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
+from functools import cached_property
 
 from ecobox.clock import local_bucket, to_local
-from ecobox.records import CatalogEntry, Sample, Transition
-from ecobox.scope import fold
+from ecobox.records import CatalogEntry, Gap, Sample, Transition
+from ecobox.scope import ScopeFilter, fold
 from ecobox.sessions import Session, derive_sessions
-from ecobox.state import AVAILABLE, CHARGING
+from ecobox.state import AVAILABLE, CHARGING, FAULTED, MAINTENANCE, OFFLINE, UNAVAILABLE
 from ecobox.storage import Storage
+
+UNUSABLE_STATES = (FAULTED, OFFLINE, MAINTENANCE, UNAVAILABLE)
 
 
 @dataclass(frozen=True)
 class Selection:
-    """Which connectors a statistic covers. Default: every AC connector in scope."""
+    """Which connectors (and which time window) a statistic covers.
+
+    Default: every AC connector recorded, whole history. `scope_terms` restricts to a scope
+    (the display scope, e.g. Hacettepe); `since`/`until` bound the samples, transitions and
+    gaps read.
+    """
 
     location_term: str | None = None
     connector_id: str | None = None
     ac_only: bool = True
+    scope_terms: tuple[str, ...] = ()
+    since: datetime | None = None
+    until: datetime | None = None
+
+    def window(self, since: datetime | None, until: datetime | None) -> "Selection":
+        return replace(self, since=since, until=until)
 
     def apply(self, catalog: list[CatalogEntry]) -> list[CatalogEntry]:
+        scope = ScopeFilter(self.scope_terms)
         chosen = []
         for entry in catalog:
             if self.ac_only and not entry.is_ac:
+                continue
+            if not scope.matches_names(entry.display_name, entry.location_name):
                 continue
             if self.connector_id is not None and entry.connector_id != self.connector_id:
                 continue
@@ -233,15 +250,23 @@ class Statistics:
     def _ids(self, selection: Selection) -> set[str]:
         return {e.connector_id for e in self.entries(selection)}
 
+    def _transitions(self, selection: Selection) -> list[Transition]:
+        return self._storage.transitions(self._ids(selection), selection.since,
+                                         selection.until)
+
+    def _samples(self, ids: set[str], selection: Selection) -> list[Sample]:
+        return self._storage.samples(ids, selection.since, selection.until)
+
     def plug_in(self, selection: Selection) -> TimeDistribution:
-        return time_distribution(self._storage.transitions(self._ids(selection)), plug_in=True)
+        return time_distribution(self._transitions(selection), plug_in=True)
 
     def unplug(self, selection: Selection) -> TimeDistribution:
-        return time_distribution(self._storage.transitions(self._ids(selection)), plug_in=False)
+        return time_distribution(self._transitions(selection), plug_in=False)
 
     def sessions(self, selection: Selection) -> list[Session]:
         ids = self._ids(selection)
-        return derive_sessions(self._storage.transitions(ids), self._storage.gaps(ids))
+        return derive_sessions(self._transitions(selection),
+                               self._storage.gaps(ids, selection.since, selection.until))
 
     def durations(self, selection: Selection) -> DurationSummary:
         return duration_summary(self.sessions(selection))
@@ -249,13 +274,269 @@ class Statistics:
     def availability(self, selection: Selection) -> list[ConnectorShare]:
         entries = self.entries(selection)
         ids = {e.connector_id for e in entries}
-        return connector_shares(entries, self._storage.samples(ids))
+        return connector_shares(entries, self._samples(ids, selection))
 
     def polls(self, selection: Selection) -> list[PollView]:
-        return poll_views(self._storage.samples(self._ids(selection)))
+        return poll_views(self._samples(self._ids(selection), selection))
+
+    @property
+    def gap_threshold(self) -> timedelta:
+        return self._gap_threshold
+
+    def history(self, selection: Selection) -> "History":
+        """Everything the selection covers, read once; the analysis derives from it in memory."""
+        entries = self.entries(selection)
+        ids = {e.connector_id for e in entries}
+        return History(
+            entries=tuple(entries),
+            samples=tuple(self._samples(ids, selection)),
+            transitions=tuple(self._storage.transitions(ids, selection.since,
+                                                        selection.until)),
+            gaps=tuple(self._storage.gaps(ids, selection.since, selection.until)),
+            gap_threshold=self._gap_threshold)
+
+    def first_sample_of(self, connector_ids: set[str]) -> datetime | None:
+        return self._storage.first_sample_time(connector_ids)
+
+    def comparison_start(self, home: Selection, since: datetime) -> datetime | None:
+        """Start of the window shared by the home selection and every other recorded site:
+        other sites may have been recorded for less time. None when there are no others."""
+        home_ids = self._ids(home)
+        other_ids = self._ids(Selection(ac_only=True)) - home_ids
+        first = self._storage.first_sample_time(other_ids)
+        return None if first is None else max(since, first)
+
+    def site_loads(self, home: Selection, home_label: str,
+                   since: datetime | None) -> list["SiteLoad"]:
+        """Busy share of every recorded site's AC sockets; the home selection is one site.
+
+        Other sites are grouped by their location name. Aggregated in SQL, so it stays cheap
+        with every Ecobox site recorded.
+        """
+        everything = Selection(ac_only=True).apply(self._storage.catalog())
+        home_ids = self._ids(home)
+        counts = self._storage.state_counts({e.connector_id for e in everything}, since)
+        groups: dict[str, list[CatalogEntry]] = defaultdict(list)
+        for entry in everything:
+            name = home_label if entry.connector_id in home_ids else entry.location_name.strip()
+            groups[name].append(entry)
+        loads = []
+        for name, entries in groups.items():
+            per_state = [counts.get(e.connector_id, {}) for e in entries]
+            total = sum(sum(c.values()) for c in per_state)
+            if not total:
+                continue
+            loads.append(SiteLoad(name, len(entries), sum(c.get(CHARGING, 0) for c in per_state),
+                                  total, name == home_label))
+        return loads
 
     def free_probability(self, selection: Selection) -> FreeGrid:
         return free_grid(self.polls(selection))
 
     def wait_until_free(self, selection: Selection, now: datetime) -> WaitSummary:
         return wait_until_free(self.polls(selection), now, self._gap_threshold)
+
+
+# ----- analysis building blocks -------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Coverage:
+    """How much observation a result rests on."""
+    polls: int
+    observed: timedelta
+    """Time between consecutive polls, counting only steps no longer than the gap threshold."""
+    first: datetime | None
+    last: datetime | None
+    dates: int = 0
+    """Distinct local calendar dates with at least one poll."""
+
+    @property
+    def days(self) -> float:
+        return self.observed.total_seconds() / 86400
+
+
+def coverage(times: list[datetime], gap_threshold: timedelta) -> Coverage:
+    times = sorted(times)
+    observed = sum((b - a for a, b in zip(times, times[1:]) if b - a <= gap_threshold),
+                   timedelta(0))
+    return Coverage(len(times), observed, times[0] if times else None,
+                    times[-1] if times else None, len({to_local(t).date() for t in times}))
+
+
+def hour_profile(grid: FreeGrid, weekdays: set[int]) -> list[FreeCell]:
+    """Free chance by local hour, pooled over the given weekdays."""
+    profile = []
+    for hour in range(24):
+        cells = [grid.cell(wd, hour) for wd in weekdays]
+        profile.append(FreeCell(sum(c.free for c in cells), sum(c.total for c in cells),
+                                sum(c.days for c in cells)))
+    return profile
+
+
+@dataclass(frozen=True)
+class ArrivalBucket:
+    label: str
+    start_hour: int
+    end_hour: int
+    """Exclusive; may be smaller than start_hour when the bucket wraps midnight."""
+
+    def contains(self, hour: int) -> bool:
+        if self.start_hour < self.end_hour:
+            return self.start_hour <= hour < self.end_hour
+        return hour >= self.start_hour or hour < self.end_hour
+
+
+ARRIVAL_BUCKETS = (
+    ArrivalBucket("sabah", 6, 11),
+    ArrivalBucket("öğle", 11, 14),
+    ArrivalBucket("öğleden sonra", 14, 18),
+    ArrivalBucket("akşam ve gece", 18, 6),
+)
+
+
+def durations_by_arrival(sessions: list[Session],
+                         buckets: tuple[ArrivalBucket, ...] = ARRIVAL_BUCKETS
+                         ) -> list[tuple[ArrivalBucket, DurationSummary]]:
+    """Clean-session durations grouped by the local hour the session started."""
+    result = []
+    for bucket in buckets:
+        inside = [s for s in sessions if bucket.contains(to_local(s.start).hour)]
+        result.append((bucket, duration_summary(inside)))
+    return result
+
+
+@dataclass(frozen=True)
+class ConnectorProfile:
+    entry: CatalogEntry
+    counts: dict[str, int]
+    """Samples per normalised state."""
+    observed: timedelta
+    dates: int
+    """Distinct local dates this socket was observed on."""
+    plug_ins: int
+    """Plug-ins whose time is certain."""
+    clean_minutes: tuple[float, ...]
+    """Occupancy times of this socket's clean sessions."""
+
+    @property
+    def total(self) -> int:
+        return sum(self.counts.values())
+
+    def share(self, *states: str) -> float:
+        return sum(self.counts.get(s, 0) for s in states) / self.total if self.total else 0.0
+
+    @property
+    def free_share(self) -> float:
+        return self.share(AVAILABLE)
+
+    @property
+    def unusable_share(self) -> float:
+        return self.share(*UNUSABLE_STATES)
+
+    @property
+    def main_unusable_state(self) -> str | None:
+        ranked = sorted(((self.counts.get(s, 0), s) for s in UNUSABLE_STATES), reverse=True)
+        return ranked[0][1] if ranked[0][0] else None
+
+    @property
+    def days(self) -> float:
+        return self.observed.total_seconds() / 86400
+
+    @property
+    def plug_ins_per_day(self) -> float:
+        """Per calendar date observed; plug-ins while nothing was recorded are not known."""
+        return self.plug_ins / self.dates if self.dates else 0.0
+
+
+@dataclass(frozen=True)
+class SiteLoad:
+    name: str
+    sockets: int
+    busy: int
+    total: int
+    home: bool
+
+    @property
+    def busy_share(self) -> float:
+        return self.busy / self.total
+
+
+@dataclass(frozen=True)
+class History:
+    """One selection's raw history, read once and derived in memory."""
+    entries: tuple[CatalogEntry, ...]
+    samples: tuple[Sample, ...]
+    transitions: tuple[Transition, ...]
+    gaps: tuple[Gap, ...]
+    gap_threshold: timedelta
+
+    def between(self, since: datetime, until: datetime | None = None) -> "History":
+        """The same history cut to [since, until) (no upper bound when until is None); gaps
+        reaching into the window stay."""
+        def inside(ts: datetime) -> bool:
+            return since <= ts and (until is None or ts < until)
+        return History(
+            self.entries,
+            tuple(s for s in self.samples if inside(s.ts)),
+            tuple(t for t in self.transitions if inside(t.ts)),
+            tuple(g for g in self.gaps if g.to_ts > since and (until is None
+                                                               or g.from_ts < until)),
+            self.gap_threshold)
+
+    @cached_property
+    def polls(self) -> list[PollView]:
+        return poll_views(list(self.samples))
+
+    @cached_property
+    def coverage(self) -> Coverage:
+        return coverage([p.ts for p in self.polls], self.gap_threshold)
+
+    @cached_property
+    def grid(self) -> FreeGrid:
+        return free_grid(self.polls)
+
+    @cached_property
+    def sessions(self) -> list[Session]:
+        return derive_sessions(list(self.transitions), list(self.gaps))
+
+    @cached_property
+    def plug_in(self) -> TimeDistribution:
+        return time_distribution(list(self.transitions), plug_in=True)
+
+    @cached_property
+    def unplug(self) -> TimeDistribution:
+        return time_distribution(list(self.transitions), plug_in=False)
+
+    @cached_property
+    def durations(self) -> DurationSummary:
+        return duration_summary(self.sessions)
+
+    @cached_property
+    def profiles(self) -> list[ConnectorProfile]:
+        counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        times: dict[str, list[datetime]] = defaultdict(list)
+        for s in self.samples:
+            counts[s.connector_id][s.state] += 1
+            times[s.connector_id].append(s.ts)
+        plug_ins: dict[str, int] = defaultdict(int)
+        for t in self.transitions:
+            if (t.prev_state is not None and not t.uncertain and t.new_state == CHARGING
+                    and t.prev_state != CHARGING):
+                plug_ins[t.connector_id] += 1
+        clean: dict[str, list[float]] = defaultdict(list)
+        for session in self.sessions:
+            if session.is_clean:
+                clean[session.connector_id].append(session.duration.total_seconds() / 60)
+        profiles = []
+        for e in self.entries:
+            seen = coverage(times[e.connector_id], self.gap_threshold)
+            profiles.append(ConnectorProfile(e, dict(counts[e.connector_id]), seen.observed,
+                                             seen.dates, plug_ins[e.connector_id],
+                                             tuple(clean[e.connector_id])))
+        return profiles
+
+    @property
+    def free_share(self) -> float | None:
+        """Share of polls on which at least one selected socket was free."""
+        polls = self.polls
+        return sum(p.any_free for p in polls) / len(polls) if polls else None

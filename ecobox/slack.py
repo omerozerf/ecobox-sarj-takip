@@ -53,6 +53,9 @@ class SlackClient(Protocol):
     def post_message(self, channel_id: str, text: str) -> str:
         """Posts plain text; returns the message ts."""
 
+    def upload_file(self, channel_id: str, data: bytes, filename: str, title: str) -> None:
+        """Shares a file in the channel (needs the files:write scope)."""
+
 
 def ts_key(ts: str) -> Decimal:
     """Slack message timestamps ("1700000000.000100") compared exactly."""
@@ -99,6 +102,30 @@ class HttpSlackClient:
         return self._call("chat.postMessage", {
             "channel": channel_id, "text": escape(text), "mrkdwn": "false",
             "unfurl_links": "false", "unfurl_media": "false"})["ts"]
+
+    def upload_file(self, channel_id: str, data: bytes, filename: str, title: str) -> None:
+        """Slack's external upload flow: ask for an upload URL, send the bytes there, then
+        complete the upload into the channel. files.upload is retired for new apps."""
+        target = self._call("files.getUploadURLExternal",
+                            {"filename": filename, "length": str(len(data))})
+        self._send_bytes(target["upload_url"], data)
+        self._call("files.completeUploadExternal", {
+            "files": json.dumps([{"id": target["file_id"], "title": title}]),
+            "channel_id": channel_id})
+
+    def _send_bytes(self, upload_url: str, data: bytes) -> None:
+        """The upload URL is pre-signed by Slack; the bot token is not sent there."""
+        request = urllib.request.Request(upload_url, data=data, method="POST",
+                                         headers={"Content-Type": "application/octet-stream"})
+        try:
+            with urllib.request.urlopen(request, timeout=self._http_timeout_s) as response:
+                response.read()
+        except urllib.error.HTTPError as exc:
+            exc.close()
+            raise SlackError("files.upload", f"HTTP {exc.code}") from None
+        except Exception as exc:
+            raise SlackError("files.upload", f"{type(exc).__name__}: "
+                                             f"{str(exc).replace(self._token, '***')}") from None
 
     def _call(self, method: str, params: dict[str, str]) -> dict[str, Any]:
         request = urllib.request.Request(

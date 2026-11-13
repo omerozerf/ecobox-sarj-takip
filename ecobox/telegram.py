@@ -3,6 +3,7 @@
 import json
 import urllib.error
 import urllib.request
+import uuid
 from typing import Any, Protocol
 
 API_BASE = "https://api.telegram.org"
@@ -16,6 +17,23 @@ class TelegramClient(Protocol):
     def get_updates(self, offset: int | None, timeout_s: int) -> list[dict[str, Any]]: ...
 
     def send_message(self, chat_id: int, text: str) -> None: ...
+
+    def send_photo(self, chat_id: int, photo: bytes, filename: str, caption: str) -> None: ...
+
+
+def multipart(fields: dict[str, str], file_field: str, filename: str, data: bytes,
+              content_type: str) -> tuple[bytes, str]:
+    """A multipart/form-data body and its Content-Type header value."""
+    boundary = f"ecobox-{uuid.uuid4().hex}"
+    parts = []
+    for name, value in fields.items():
+        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+                     f"{value}\r\n".encode())
+    parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; "
+                 f"filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n".encode())
+    parts.append(data)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
 class HttpTelegramClient:
@@ -33,10 +51,18 @@ class HttpTelegramClient:
         self._call("sendMessage", {"chat_id": chat_id, "text": text,
                                    "disable_web_page_preview": True}, self._http_timeout_s)
 
+    def send_photo(self, chat_id: int, photo: bytes, filename: str, caption: str) -> None:
+        body, content_type = multipart({"chat_id": str(chat_id), "caption": caption}, "photo",
+                                       filename, photo, "image/png")
+        self._post("sendPhoto", body, content_type, self._http_timeout_s)
+
     def _call(self, method: str, params: dict[str, Any], timeout_s: float) -> Any:
+        return self._post(method, json.dumps(params).encode(), "application/json", timeout_s)
+
+    def _post(self, method: str, body: bytes, content_type: str, timeout_s: float) -> Any:
         request = urllib.request.Request(
-            f"{API_BASE}/bot{self._token}/{method}", data=json.dumps(params).encode(),
-            headers={"Content-Type": "application/json"}, method="POST")
+            f"{API_BASE}/bot{self._token}/{method}", data=body,
+            headers={"Content-Type": content_type}, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=timeout_s) as response:
                 payload = json.loads(response.read())

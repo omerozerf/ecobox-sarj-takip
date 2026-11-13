@@ -1,23 +1,38 @@
 # ecobox-sarj-takip
 
-Hacettepe Teknokent'teki Ecobox AC şarj prizlerinin durumunu gece gündüz kaydeden küçük bir
-Python servisi ve üstünde çalışan bir Telegram botu ile bir Slack botu.
+Ecobox AC şarj prizlerinin durumunu gece gündüz kaydeden küçük bir Python servisi ve üstünde
+çalışan bir Telegram botu ile bir Slack botu. Bot Hacettepe Teknokent'i gösterir; kayıt bütün
+Ecobox sitelerini kapsar.
 
-- **Veri havuzu:** her 3 dakikada bir tüm prizlerin durumu SQLite'a yazılır. Birkaç hafta sonra
-  şu sorular cevaplanabilir: insanlar ne zaman takıp ne zaman çıkarıyor, oturumlar ne kadar
-  sürüyor, hangi gün/saatte boş priz bulma ihtimali yüksek, hangi priz en çok boş.
-- **Telegram ve Slack botu:** anlık durum, "boşalınca haber ver", istatistik ve şarj
-  süresi/ücret tahmini. İkisi aynı komutları bilir; biri, ikisi ya da hiçbiri açık olabilir.
+- **Veri havuzu:** her 3 dakikada bir tüm Ecobox prizlerinin durumu SQLite'a yazılır (tek durum
+  isteği zaten hepsini getirir). Bot komutları ve bildirimler yalnızca görünen kapsamı
+  (`ECOBOX_SCOPE`, varsayılan Hacettepe) gösterir; diğer siteler karşılaştırma için tutulur.
+- **Analiz:** biriken geçmiş, yüksek sesle söylenebilecek cümlelere çevrilir: hangi saatte boş
+  priz bulmak kolay, insanlar ne zaman takıp çıkarıyor, bir araç prizi ne kadar işgal ediyor,
+  hangi priz yürümeye değer, hangisi arızalı, Hacettepe diğer sitelere göre ne kadar yoğun, bu
+  hafta geçen haftadan farklı mı. Her bulgu neye dayandığını yazar; verisi yetmeyen bulgu tahmin
+  etmez, neye ihtiyacı olduğunu tek satırda söyler.
+- **Grafikler:** telefonda okunur PNG'ler (gün × saat ısı haritası, takma/çıkarma saatleri,
+  priz zaman çizelgesi, işgal süresi dağılımı, site karşılaştırması).
+- **Telegram ve Slack botu:** anlık durum, "boşalınca haber ver", istatistik, analiz,
+  grafik, haftalık özet ve şarj süresi/ücret tahmini. İkisi aynı komutları bilir; biri, ikisi
+  ya da hiçbiri açık olabilir.
 
-Yalnızca Python standart kütüphanesi kullanılır (Python 3.14, `/opt/homebrew/bin/python3`).
-Telegram ya da Slack token'ı olmadan da kaydedici çalışır; veri toplamaya bot hazır olmadan
-başlanabilir.
+Kaydedici ve metin komutları yalnızca Python standart kütüphanesini kullanır (Python 3.14).
+Grafikler için matplotlib gerekir; proje içindeki `.venv`'e kurulur. matplotlib yoksa her şey
+çalışmaya devam eder, yalnızca grafik istenince bunu söyleyen bir cevap gelir. Telegram ya da
+Slack token'ı olmadan da kaydedici çalışır; veri toplamaya bot hazır olmadan başlanabilir.
+
+**Süre adı:** API bir prizin "dolu" olduğunu söyler ama araç hâlâ şarj mı oluyor, yoksa şarjı
+bitip takılı mı duruyor ayırt etmez; enerji ya da araç bilgisi de vermez. Bu yüzden oturum
+süresi her yerde **prizi işgal süresi** diye geçer, şarj süresi değil.
 
 ## Başlangıç
 
 ```bash
 cd ecobox-sarj-takip
 cp .env.example .env            # gerekirse düzenleyin
+scripts/setup_venv.sh           # .venv + matplotlib (grafikler için; isteğe bağlı)
 python3 -m ecobox --help
 python3 -m ecobox poll-once     # ilk canlı kontrol: listeyi ve durumu bir kez çeker, yazdırır
 python3 -m ecobox run           # sürekli çalıştır (Ctrl+C ile durur)
@@ -30,10 +45,20 @@ python3 -m ecobox status                    # son kaydedilen durum
 python3 -m ecobox stats                     # tüm AC prizler
 python3 -m ecobox stats --location ego      # konum filtresi (ör. ego, "f blok", arge)
 python3 -m ecobox estimate 20 80            # %20 → %80 süre, bitiş saati, ücret
+python3 -m ecobox insights                  # botun `analiz` cevabı
+python3 -m ecobox insights --location ego   # konum; kapsam dışı bir site de olabilir
+.venv/bin/python -m ecobox charts --out /tmp/grafikler            # bütün grafikler
+.venv/bin/python -m ecobox charts --out /tmp/grafikler --kind saat
 python3 -m ecobox poll-once --no-store      # veritabanına yazmadan bir kez çek
+python3 -m ecobox import-snapshots          # GitHub görüntülerini Mac'in boşluklarına ekle
 ```
 
-Testler: `python3 -m unittest discover -s tests` (ağa çıkmaz; fixture ve sahte istemcilerle çalışır).
+Testler ağa çıkmaz; fixture, sentetik geçmiş ve sahte istemcilerle çalışır:
+
+```bash
+.venv/bin/python -m unittest discover -s tests          # hepsi
+/opt/homebrew/bin/python3 -m unittest discover -s tests # matplotlib'siz; çizim testleri atlanır
+```
 
 ## Arka planda sürekli çalıştırma (launchd)
 
@@ -43,8 +68,47 @@ scripts/uninstall_launchd.sh    # durdurur ve kaldırır (veri ve loglar kalır)
 ```
 
 Servis oturum açıldığında başlar ve çökerse yeniden başlatılır. Loglar `logs/` altında.
+`.venv` varsa servis onun Python'uyla çalışır (grafikler için), yoksa
+`/opt/homebrew/bin/python3` ile. `.venv`'i sonradan kurduysanız `install_launchd.sh`'ı yeniden
+çalıştırın; servis kodu yalnızca açılışta yüklediği için kod değişiklikleri de yeniden
+başlatınca devreye girer.
 Mac uyurken kayıt olmaz; bu boşluklar veritabanında işaretlenir ve zamanlama istatistiklerine
-katılmaz (aşağıya bakın).
+katılmaz (aşağıya bakın). Boşlukları GitHub'daki ikinci kaydedici doldurabilir (sonraki bölüm).
+
+## Mac uyurken: GitHub görüntüleri
+
+GitHub Actions'taki `collect` iş akışı (`.github/workflows/collect.yml`) yaklaşık 5 dakikada bir
+bütün prizlerin ham durumunu çekip deponun `data` dalına `snapshots/` altına yazar (biçim:
+`ecobox/snapshot.py`). GitHub zamanlanmış işleri sık sık geciktirir ya da atlar; bu yüzden bu
+kaynak Mac'in yerini tutmaz, yalnızca boşluklarını doldurur.
+
+`.env`'de `ECOBOX_SNAPSHOT_REPO_URL` doluysa servis açılışta ve sonra saatte bir
+(`ECOBOX_SNAPSHOT_IMPORT_S`) `data` dalını `data/remote` altına girişsiz https ile çeker (sistemin
+`git`'i; ilk seferde sığ klon, sonra yalnızca yenileri) ve görüntüleri veritabanına ekler. Bu iş
+kendi iş parçacığında çalışır; git ya da uzun bir geriye dönük ekleme kaydediciyi bekletmez.
+Aynısı elle: `python3 -m ecobox import-snapshots` (ya da `--dir <klasör>` ile git'siz). Adres
+boşsa özellik kapalıdır.
+
+Kural: bir görüntü yalnızca Mac'in kendisinin görmediği bir ana aitse kullanılır. Mac'in başarılı
+bir okuması görüntüye yarım aralıktan (varsayılan 90 sn) yakınsa ya da görüntü, aralarında boşluk
+eşiğinden (7,5 dk) az olan iki Mac okumasının arasındaysa görüntü atlanır. Yani Mac uyanıkken
+yalnızca Mac'in örnekleri kalır; iki kaynak birbirine karışmaz. Yarım aralık, bir boşluğun
+kenarında Mac'in son okumasıyla ilk görüntü arasındaki adımı eşiğin altında tutar (90 + 300 sn
+< 450 sn), yani doldurmanın kendisi kenarda yapay bir boşluk yaratmaz.
+
+- Eklenen örnekler `poll_log`'da `kind='snapshot'` satırlarına bağlıdır (Mac'inkiler
+  `kind='status'`); kapsam kaynağa göre ayrı raporlanır.
+- Geçmişe örnek eklenince o prizin geçişleri ve boşlukları, eklenen ilk örnekten önceki örnekten
+  eklenen son örnekten sonraki örneğe kadar kaydedicinin kendi kuralıyla yeniden hesaplanır
+  (`ecobox/sequence.py`): sonuç, kaydedici birleşik diziyi sırayla görmüş gibidir. Görüntüler
+  arasında da eşikten uzun ara varsa (GitHub bir işi atladıysa) boşluk yazılır ve geçiş
+  `uncertain` işaretlenir.
+- Bir görüntü en az boşluk eşiği kadar (7,5 dk) eskiyince alınır; daha yenisi bir sonraki
+  çalıştırmaya kalır, çünkü Mac'in yanına düşecek bir okuması henüz gelebilir.
+- İlerleme `service_state`'te (`snapshot_import_cursor`) tutulur; her çalıştırma yalnızca
+  yenileri okur. Aynı görüntü iki kez eklenmez (ilerleme kaydı silinse bile).
+- Yerel katalogda olmayan prizlerin satırları atlanır, kaydedicinin kayıt kapsamı dışındaki
+  prizleri atlaması gibi; katalog boşsa hiçbir şey alınmaz ve görüntüler sonraya kalır.
 
 ## Telegram botunu kurma
 
@@ -60,8 +124,8 @@ katılmaz (aşağıya bakın).
 Bot yalnızca bu chat id'ye hizmet verir; başka sohbetlere "özel kullanım" der. Token loglara
 yazılmaz.
 
-Komutlar: `/durum`, `/haberver [konum]`, `/iptal`, `/istatistik [konum]`,
-`/tahmin <başlangıç %> <hedef %> [konum]`, `/yardim`.
+Komutlar: `/durum`, `/haberver [konum]`, `/iptal`, `/istatistik [konum]`, `/analiz [konum]`,
+`/grafik [tür] [konum]`, `/tahmin <başlangıç %> <hedef %> [konum]`, `/yardim`.
 `/haberver` bir kez çalışır: eşleşen bir AC priz boş duruma geçince mesaj atar ve abonelik kapanır.
 
 ## Slack botunu kurma
@@ -72,8 +136,11 @@ ya da websocket gerekmez: servis birkaç saniyede bir kanalın geçmişini Slack
 
 1. https://api.slack.com/apps adresinde **Create New App → From scratch** ile çalışma alanınıza
    bir uygulama açın.
-2. **OAuth & Permissions → Bot Token Scopes** altına şu dört kapsamı ekleyin:
-   `chat:write`, `groups:write`, `groups:read`, `groups:history`.
+2. **OAuth & Permissions → Bot Token Scopes** altına şu beş kapsamı ekleyin:
+   `chat:write`, `groups:write`, `groups:read`, `groups:history` ve grafikleri yüklemek için
+   `files:write`. Bot zaten kuruluysa `files:write`'ı ekleyip uygulamayı çalışma alanına
+   yeniden kurun (**Reinstall to Workspace**); token değişmez. İzin yoksa bot grafiğin yerine
+   bunu söyleyen bir mesaj yazar, diğer komutlar çalışmaya devam eder.
 3. **Install to Workspace** deyin ve verilen **Bot User OAuth Token**'ı (`xoxb-...`) `.env` içine
    `SLACK_BOT_TOKEN=...` olarak yazın.
 4. Kendi üye id'nizi bulun (Slack'te profiliniz → ⋮ → **Copy member ID**, `U...` ile başlar) ve
@@ -88,7 +155,7 @@ tarafı durur. `.env`'de kullanılmayan bir ad seçip servisi yeniden başlatın
 
 **Slack'te komutlar başına `/` koymadan yazılır**, çünkü Slack `/` ile başlayan her mesajı kendi
 slash komutu sanıp yutar: `durum`, `haberver ego`, `haberver f blok`, `iptal`,
-`istatistik f blok`, `tahmin 20 80`, `yardim` (ya da `yardım`). Büyük/küçük harf fark etmez;
+`istatistik f blok`, `analiz`, `grafik saat ego`, `tahmin 20 80`, `yardim` (ya da `yardım`). Büyük/küçük harf fark etmez;
 başına `!` koyarsanız da çalışır. Kanalda yalnızca `SLACK_USER_ID`'nin yazdıkları cevaplanır.
 
 Abonelikler yapıldıkları yere bağlıdır: Slack'te `haberver` derseniz bildirim Slack'e,
@@ -98,6 +165,41 @@ yalnızca yazıldığı taraftaki aboneliği kapatır.
 Slack'in hız sınırına takılırsa (HTTP 429) servis Slack'in söylediği süre kadar bekler. Slack ya
 da Telegram tarafındaki bir hata kaydediciyi ve diğer botu durdurmaz. Token loglara yazılmaz.
 
+## Analiz ve grafikler
+
+`analiz [konum]` bulguları en kullanışlıdan başlayarak sıralar; her bulgunun altında `↳` ile
+neye dayandığı yazar, verisi yetmeyenler en altta "Henüz erken" başlığında tek satır olur.
+Konum verilmezse görünen kapsam (Hacettepe) analiz edilir; görünen kapsamda eşleşmeyen bir
+konum bütün kayıtlı sitelerde aranır. Analiz son 8 haftaya bakar, veri biriktikçe kendiliğinden
+netleşir.
+
+| Bulgu | Gerekli en az veri |
+|---|---|
+| Boş priz bulmanın en kolay/zor saati (hafta içi ve hafta sonu ayrı) | 3 saat diliminde 10'ar okuma (yarım saat) |
+| En sık boş / neredeyse hiç boş olmayan prizler | Priz başına 60 okuma (3 saat) |
+| Prizi işgal süresi | 5 temiz oturum |
+| Takma ve çıkarma saatleri | 5 kesin takma ya da çıkarma |
+| Geliş saatine göre işgal süresi | 2 zaman diliminde 3'er temiz oturum |
+| Priz başına günlük kullanım | Priz başına 1 günlük gözlem |
+| 4 saatten uzun işgaller | 5 temiz oturum |
+| Arıza, çevrimdışı, bakım payı | Priz başına 60 okuma |
+| Diğer Ecobox siteleriyle karşılaştırma | Ortak pencerede en az 3 başka site |
+| Geçen haftaya göre değişim | Son iki haftanın her birinde 2,5 günlük gözlem |
+
+Eşikler `ecobox/insights.py` içindeki `Thresholds`'ta; yeni bir bulgu türü bir kural
+fonksiyonu yazıp `DEFAULT_RULES`'a eklenerek gelir.
+
+`grafik [tür] [konum]` türleri: `isi` (varsayılan; gün × saat boş priz şansı), `saat` (takma ve
+çıkarma saatleri), `zaman` (priz zaman çizelgesi, son 24 saat ve son 7 gün: iki resim), `sure`
+(işgal süresi dağılımı), `site` (sitelere göre AC doluluk oranı). Gözlem olmayan hücreler
+taralı çizilir, "%0"dan ayırt edilir; her grafik alt başlığında kaç prize ve ne kadar gözleme
+dayandığını yazar.
+
+**Haftalık özet:** `DIGEST_WEEKDAY` ve `DIGEST_HOUR` (İstanbul saati) geldiğinde, son 7 günün
+bulguları ve ısı haritası açık olan her bota kendiliğinden gider. Mac o an uykudaysa aynı hafta
+uyanınca gönderilir; haftada bir kereden fazla gitmez (gönderilen hafta `service_state`'te
+tutulur). Toplam gözlem `DIGEST_MIN_DAYS` günden azsa gönderilmez. `DIGEST_WEEKDAY=0` kapatır.
+
 ## Veriler nerede
 
 `data/ecobox.sqlite3` (git'e girmez). Tüm zamanlar UTC saklanır; saat/gün istatistikleri
@@ -105,22 +207,31 @@ da Telegram tarafındaki bir hata kaydediciyi ve diğer botu durdurmaz. Token lo
 
 | Tablo | İçerik |
 |---|---|
-| `poll_log` | Her istek (durum ve istasyon listesi), başarılı/hatalı, süre. Kapsama buradan görülür. |
-| `charge_points`, `connectors` | Kapsamdaki istasyonlar ve prizler (tip, güç, ham JSON). |
+| `poll_log` | Her istek (durum ve istasyon listesi), başarılı/hatalı, süre; GitHub'dan alınan görüntüler `kind='snapshot'`. Kapsama buradan görülür. |
+| `charge_points`, `connectors` | Kaydedilen istasyonlar ve prizler (tip, güç, ham JSON, çalışma saati ve otomatik şarj bayrakları, son rezervasyon alanları). |
+| `catalog_snapshots` | Her istasyon listesi yenilemesinde her prizin rezervasyon, bakım, çalışma saati ve erişim alanları; değişimleri geriye dönük görmek için. |
 | `tariff_history` | Her prizin tarife geçmişi; fiyat değişince yeni satır. |
-| `samples` | Her okumada her prizin normalize durumu ve ham alanları. |
+| `samples` | Her okumada her prizin normalize durumu ve ham alanları; API yeni bir alan göndermeye başlarsa `extra_json`'da saklanır. |
 | `transitions` | Durum değişimleri; `uncertain=1` ise gerçek zaman bilinmiyor. |
 | `gaps` | Kayıt boşlukları (önceki örnek 2,5 × aralıktan eski). |
 | `subscriptions` | Bekleyen "haber ver" abonelikleri; `transport` (telegram/slack) hangi tarafta bildirileceğini söyler. |
-| `service_state` | Botların kalıcı durumu: Slack kanal id'si, işlenen son Slack mesajının zamanı. |
+| `service_state` | Kalıcı servis durumu: Slack kanal id'si, işlenen son Slack mesajının zamanı, GitHub görüntülerinde gelinen yer. |
 
 Şema değişiklikleri servis açılırken kendiliğinden uygulanır; yalnızca ekleme yapar (eksik tablo
 ve sütunları ekler), mevcut satırlara dokunmaz ve tekrar çalışınca bir şey değiştirmez.
 
+Rezervasyon alanları (`connectorReservationStatus`, `nearByConnectorReservations`) durum
+isteğinde değil istasyon listesinde geliyor; liste günde bir kez çekildiği için bu alanların
+geçmişi günlük çözünürlüktedir.
+
+**Disk:** bütün siteler kaydedilince veritabanı günde yaklaşık 18 MB büyür (168 priz × 480
+okuma; sentetik bir günle ölçüldü), ayda ~0,5 GB. Yalnızca Hacettepe kaydetmek için
+`ECOBOX_RECORD_SCOPE=hacettepe`.
+
 **Boşluklar:** Bir prizin önceki örneği 2,5 × okuma aralığından (varsayılan 7,5 dk) eskiyse, o
 arada olan değişimin zamanı bilinmez. Bu geçişler `uncertain` işaretlenir; takılma/çıkarma saati
-istatistiklerine katılmaz. İçinde boşluk olan ya da belirsiz bir geçişle başlayan/biten şarj
-oturumları süre istatistiğine katılmaz. Doluluk oranları yalnızca gerçekten gözlenen okumaları
+istatistiklerine katılmaz. İçinde boşluk olan ya da belirsiz bir geçişle başlayan/biten
+oturumlar işgal süresi istatistiğine katılmaz. Doluluk oranları yalnızca gerçekten gözlenen okumaları
 sayar. Her istatistik kaç gözleme dayandığını yazar.
 
 ## Uyarı: resmi olmayan uç nokta

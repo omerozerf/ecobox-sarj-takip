@@ -1,4 +1,7 @@
-"""Charging sessions derived from transitions.
+"""Sessions (occupancy of a socket) derived from transitions.
+
+"Charging" is the API's busy state: it does not tell charging from a finished car left
+plugged in, so a session's length is occupancy time, never charge time.
 
 A session is one connector's run of the "charging" state: it opens at the transition into
 charging and closes at the next transition out. Times are the first sample that showed the new

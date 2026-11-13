@@ -4,7 +4,9 @@ import json
 import urllib.request
 from typing import Any, Protocol
 
-from ecobox.models import ChargePoint, ConnectorStatus, parse_station_list, parse_status
+from ecobox.models import ChargePoint, ConnectorStatus, parse_station_list
+
+RawStatusRow = dict[str, Any]
 
 BASE_URL = "https://map-api.echargo.com"
 STATUS_PATH = "/api/app/connector/status?includeNonPublic=true"
@@ -40,7 +42,11 @@ class HttpEcoboxApi:
         return parse_station_list(self._request("POST", LIST_PATH, LIST_BODY))
 
     def fetch_status(self) -> list[ConnectorStatus]:
-        return parse_status(self._request("GET", STATUS_PATH, None))
+        return [ConnectorStatus.from_api(row) for row in self.fetch_status_rows()]
+
+    def fetch_status_rows(self) -> list[RawStatusRow]:
+        """The status rows exactly as the API sent them, for collectors that store raw fields."""
+        return self._request("GET", STATUS_PATH, None)["result"]
 
     def _request(self, method: str, path: str, body: dict | None) -> dict[str, Any]:
         headers = dict(REQUEST_HEADERS)

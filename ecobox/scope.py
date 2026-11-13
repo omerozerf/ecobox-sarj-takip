@@ -1,4 +1,9 @@
-"""Which charge points are recorded, and Turkish-tolerant text matching."""
+"""Scopes over the catalog, and Turkish-tolerant text matching.
+
+Two scopes exist: the *record* scope (which charge points the recorder samples; by default
+every Ecobox site) and the *display* scope (what the bot and the default analysis show; by
+default Hacettepe). Both are a `ScopeFilter`.
+"""
 
 from ecobox.models import ChargePoint
 
@@ -28,10 +33,13 @@ class ScopeFilter:
         return self._terms
 
     def matches(self, charge_point: ChargePoint) -> bool:
+        return self.matches_names(charge_point.display_name, charge_point.location_name)
+
+    def matches_names(self, display_name: str, location_name: str) -> bool:
+        """Same rule for a stored catalog row (`CatalogEntry`) as for an API charge point."""
         if not self._terms:
             return True
-        return matches_terms(f"{charge_point.display_name} {charge_point.location_name}",
-                             self._terms)
+        return matches_terms(f"{display_name} {location_name}", self._terms)
 
     def select(self, charge_points: list[ChargePoint]) -> list[ChargePoint]:
         return [cp for cp in charge_points if self.matches(cp)]

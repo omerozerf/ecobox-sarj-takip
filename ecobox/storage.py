@@ -3,6 +3,8 @@
 import json
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -16,7 +18,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS poll_log (
     id            INTEGER PRIMARY KEY,
     ts_utc        TEXT    NOT NULL,
-    kind          TEXT    NOT NULL,          -- 'status' | 'stations'
+    kind          TEXT    NOT NULL,          -- 'status' | 'stations' | 'snapshot'
     ok            INTEGER NOT NULL,
     error         TEXT,
     rows_total    INTEGER,
@@ -36,7 +38,9 @@ CREATE TABLE IF NOT EXISTS charge_points (
     is_public      INTEGER NOT NULL,
     first_seen_utc TEXT NOT NULL,
     last_seen_utc  TEXT NOT NULL,
-    raw_json       TEXT NOT NULL             -- latest list item, connectors included
+    raw_json       TEXT NOT NULL,            -- latest list item, connectors included
+    is_device_in_working_hours INTEGER,
+    supports_auto_charge       INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS connectors (
@@ -49,8 +53,29 @@ CREATE TABLE IF NOT EXISTS connectors (
     maintenance_title  TEXT,
     maintenance_end_at TEXT,
     first_seen_utc     TEXT NOT NULL,
-    last_seen_utc      TEXT NOT NULL
+    last_seen_utc      TEXT NOT NULL,
+    socket_code        TEXT,
+    reservation_status TEXT,                 -- latest connectorReservationStatus (JSON)
+    nearby_reservations TEXT                 -- latest nearByConnectorReservations (JSON)
 );
+
+-- One row per connector per station-list refresh: the slowly changing fields worth a history
+-- (reservations, maintenance, working hours). JSON columns are NULL when the API gave nothing.
+CREATE TABLE IF NOT EXISTS catalog_snapshots (
+    id                         INTEGER PRIMARY KEY,
+    connector_id               TEXT NOT NULL REFERENCES connectors(id),
+    ts_utc                     TEXT NOT NULL,
+    reservation_status         TEXT,
+    nearby_reservations        TEXT,
+    is_under_maintenance       INTEGER,
+    maintenance_title          TEXT,
+    maintenance_end_at         TEXT,
+    is_device_in_working_hours INTEGER,
+    supports_auto_charge       INTEGER,
+    is_public                  INTEGER,
+    has_available_connectors   INTEGER
+);
+CREATE INDEX IF NOT EXISTS catalog_snapshots_conn ON catalog_snapshots(connector_id, ts_utc);
 
 -- One row per distinct tariff seen on a connector; tariff_id NULL means the API gave none.
 CREATE TABLE IF NOT EXISTS tariff_history (
@@ -77,9 +102,11 @@ CREATE TABLE IF NOT EXISTS samples (
     charging_state       INTEGER,
     charging_state_name  TEXT,
     is_under_maintenance INTEGER,
+    extra_json           TEXT,               -- unknown status fields, NULL while there are none
     PRIMARY KEY (connector_id, ts_utc)
 );
 CREATE INDEX IF NOT EXISTS samples_poll ON samples(poll_id);
+CREATE INDEX IF NOT EXISTS samples_ts ON samples(ts_utc);
 
 CREATE TABLE IF NOT EXISTS transitions (
     id           INTEGER PRIMARY KEY,
@@ -123,6 +150,12 @@ CREATE TABLE IF NOT EXISTS service_state (
 # Each runs only when the column is missing, so opening a database is idempotent.
 ADDED_COLUMNS = (
     ("subscriptions", "transport", "TEXT NOT NULL DEFAULT 'telegram'"),
+    ("charge_points", "is_device_in_working_hours", "INTEGER"),
+    ("charge_points", "supports_auto_charge", "INTEGER"),
+    ("connectors", "socket_code", "TEXT"),
+    ("connectors", "reservation_status", "TEXT"),
+    ("connectors", "nearby_reservations", "TEXT"),
+    ("samples", "extra_json", "TEXT"),
 )
 
 
@@ -135,10 +168,51 @@ def migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+POLL_STATUS = "status"
+"""A status poll made by this machine's recorder."""
+POLL_SNAPSHOT = "snapshot"
+"""A status snapshot taken by the remote collector and imported afterwards."""
+
+
 @dataclass(frozen=True)
 class SampleWrite:
     status: ConnectorStatus
     state: str
+
+
+@dataclass(frozen=True)
+class SampleWindow:
+    """One connector's samples around a stretch whose derived rows must be replayed.
+
+    `samples` runs from the first sample of the stretch through `end`, the first sample after
+    it (None when the stretch reaches the newest sample). `anchor` is the sample just before.
+    """
+    connector_id: str
+    anchor: tuple[datetime, str] | None
+    samples: list[tuple[datetime, str]]
+    end: datetime | None
+
+
+def _optional_int(value: bool | None) -> int | None:
+    return None if value is None else int(value)
+
+
+def _in(ids: set[str]) -> str:
+    """Placeholders for `connector_id IN (...)`."""
+    return ",".join("?" * len(ids))
+
+
+def _window(since: datetime | None, until: datetime | None,
+            column: str = "ts_utc") -> tuple[str, list[str]]:
+    """Extra SQL conditions and parameters for an optional [since, until) time window."""
+    sql, params = "", []
+    if since is not None:
+        sql += f" AND {column} >= ?"
+        params.append(to_db(since))
+    if until is not None:
+        sql += f" AND {column} < ?"
+        params.append(to_db(until))
+    return sql, params
 
 
 class Storage:
@@ -152,12 +226,39 @@ class Storage:
         if str(path) != ":memory:":
             self._conn.execute("PRAGMA journal_mode = WAL")
         self._lock = threading.RLock()
+        self._tx_depth = 0
         with self._lock, self._conn:
             migrate(self._conn)
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Hold the storage lock and commit once at the end (rolled back on an exception).
+
+        Re-entrant: a nested call joins the outer transaction. The `*_in_tx` writers below
+        refuse to run outside one, so a batch is never committed half-way.
+        """
+        with self._lock:
+            if self._tx_depth:
+                self._tx_depth += 1
+                try:
+                    yield
+                finally:
+                    self._tx_depth -= 1
+                return
+            self._tx_depth = 1
+            try:
+                with self._conn:
+                    yield
+            finally:
+                self._tx_depth = 0
+
+    def _require_tx(self) -> None:
+        if not self._tx_depth:
+            raise RuntimeError("must run inside Storage.transaction()")
 
     # ----- poll log -------------------------------------------------------------------
 
@@ -169,9 +270,15 @@ class Storage:
             return cur.lastrowid
 
     def ok_status_poll_times(self) -> list[datetime]:
+        """Successful polls of this machine's own recorder."""
+        return self.ok_poll_times(POLL_STATUS)
+
+    def ok_poll_times(self, *kinds: str) -> list[datetime]:
+        """Successful observations of the given poll_log kinds (e.g. per source), oldest first."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT ts_utc FROM poll_log WHERE kind='status' AND ok=1 ORDER BY ts_utc").fetchall()
+                f"SELECT ts_utc FROM poll_log WHERE kind IN ({','.join('?' * len(kinds))}) "
+                f"AND ok=1 ORDER BY ts_utc", kinds).fetchall()
         return [from_db(r[0]) for r in rows]
 
     def poll_counts(self) -> tuple[int, int]:
@@ -192,31 +299,51 @@ class Storage:
                 self._conn.execute(
                     """INSERT INTO charge_points(id, display_name, location_id, location_name,
                            address, latitude, longitude, is_public, first_seen_utc,
-                           last_seen_utc, raw_json)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                           last_seen_utc, raw_json, is_device_in_working_hours,
+                           supports_auto_charge)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name,
                            location_id=excluded.location_id, location_name=excluded.location_name,
                            address=excluded.address, latitude=excluded.latitude,
                            longitude=excluded.longitude, is_public=excluded.is_public,
-                           last_seen_utc=excluded.last_seen_utc, raw_json=excluded.raw_json""",
+                           last_seen_utc=excluded.last_seen_utc, raw_json=excluded.raw_json,
+                           is_device_in_working_hours=excluded.is_device_in_working_hours,
+                           supports_auto_charge=excluded.supports_auto_charge""",
                     (cp.id, cp.display_name, cp.location_id, cp.location_name, cp.address,
                      cp.latitude, cp.longitude, int(cp.is_public), now, now,
-                     json.dumps(cp.raw, ensure_ascii=False)))
+                     json.dumps(cp.raw, ensure_ascii=False),
+                     _optional_int(cp.is_device_in_working_hours),
+                     _optional_int(cp.supports_auto_charge)))
                 for c in cp.connectors:
                     self._conn.execute(
                         """INSERT INTO connectors(id, charge_point_id, connector_order, type,
                                power_kw, has_barrier, maintenance_title, maintenance_end_at,
-                               first_seen_utc, last_seen_utc)
-                           VALUES (?,?,?,?,?,?,?,?,?,?)
+                               first_seen_utc, last_seen_utc, socket_code, reservation_status,
+                               nearby_reservations)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                            ON CONFLICT(id) DO UPDATE SET charge_point_id=excluded.charge_point_id,
                                connector_order=excluded.connector_order, type=excluded.type,
                                power_kw=excluded.power_kw, has_barrier=excluded.has_barrier,
                                maintenance_title=excluded.maintenance_title,
                                maintenance_end_at=excluded.maintenance_end_at,
-                               last_seen_utc=excluded.last_seen_utc""",
+                               last_seen_utc=excluded.last_seen_utc,
+                               socket_code=excluded.socket_code,
+                               reservation_status=excluded.reservation_status,
+                               nearby_reservations=excluded.nearby_reservations""",
                         (c.id, cp.id, c.connector_order, c.type, c.power_kw, int(c.has_barrier),
-                         c.maintenance_title, c.maintenance_end_at, now, now))
+                         c.maintenance_title, c.maintenance_end_at, now, now, c.socket_code,
+                         c.reservation_status, c.nearby_reservations))
                     self._record_tariff(c.id, c.tariff, now)
+                    self._conn.execute(
+                        "INSERT INTO catalog_snapshots(connector_id, ts_utc, reservation_status, "
+                        "nearby_reservations, is_under_maintenance, maintenance_title, "
+                        "maintenance_end_at, is_device_in_working_hours, supports_auto_charge, "
+                        "is_public, has_available_connectors) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (c.id, now, c.reservation_status, c.nearby_reservations,
+                         _optional_int(c.is_under_maintenance), c.maintenance_title,
+                         c.maintenance_end_at, _optional_int(cp.is_device_in_working_hours),
+                         _optional_int(cp.supports_auto_charge), int(cp.is_public),
+                         _optional_int(cp.has_available_connectors)))
             self._conn.execute(
                 "INSERT INTO poll_log(ts_utc, kind, ok, rows_total, rows_in_scope, duration_ms) "
                 "VALUES (?, 'stations', 1, ?, ?, ?)",
@@ -239,6 +366,15 @@ class Storage:
             "INSERT INTO tariff_history(connector_id, tariff_id, energy_price, service_price, "
             "initial_price, currency, vat, effective_date, first_seen_utc, last_seen_utc) "
             "VALUES (?,?,?,?,?,?,?,?,?,?)", (connector_id, *key, effective, now, now))
+
+    def catalog_snapshots(self, connector_id: str) -> list[dict[str, object]]:
+        """Every stored snapshot of one connector, oldest first, as column -> value."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM catalog_snapshots WHERE connector_id=? ORDER BY ts_utc, id",
+                (connector_id,))
+            columns = [d[0] for d in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     def has_catalog(self) -> bool:
         with self._lock:
@@ -275,14 +411,21 @@ class Storage:
     # ----- status samples -------------------------------------------------------------
 
     def latest_samples(self) -> dict[str, tuple[datetime, str]]:
-        """connector_id -> (ts, state) of its newest sample."""
+        """connector_id -> (ts, state) of its newest sample.
+
+        One primary-key lookup per catalog connector, so the cost stays flat as history grows
+        (a GROUP BY over every sample would scan the whole table on each poll).
+        """
         with self._lock:
-            rows = self._conn.execute(
-                """SELECT s.connector_id, s.ts_utc, s.state FROM samples s
-                   JOIN (SELECT connector_id, MAX(ts_utc) AS ts FROM samples
-                         GROUP BY connector_id) m
-                     ON m.connector_id = s.connector_id AND m.ts = s.ts_utc""").fetchall()
-        return {r[0]: (from_db(r[1]), r[2]) for r in rows}
+            ids = [r[0] for r in self._conn.execute("SELECT id FROM connectors")]
+            latest = {}
+            for connector_id in ids:
+                row = self._conn.execute(
+                    "SELECT ts_utc, state FROM samples WHERE connector_id=? "
+                    "ORDER BY ts_utc DESC LIMIT 1", (connector_id,)).fetchone()
+                if row is not None:
+                    latest[connector_id] = (from_db(row[0]), row[1])
+        return latest
 
     def record_status_poll(self, ts: datetime, rows_total: int, duration_ms: int,
                            samples: list[SampleWrite], transitions: list[Transition],
@@ -295,12 +438,12 @@ class Storage:
                 (now, rows_total, len(samples), duration_ms)).lastrowid
             self._conn.executemany(
                 "INSERT INTO samples(poll_id, connector_id, ts_utc, state, availability, "
-                "charging_state, charging_state_name, is_under_maintenance) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "charging_state, charging_state_name, is_under_maintenance, extra_json) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 [(poll_id, s.status.connector_id, now, s.state, s.status.availability,
                   s.status.charging_state, s.status.charging_state_name,
-                  None if s.status.is_under_maintenance is None
-                  else int(s.status.is_under_maintenance)) for s in samples])
+                  _optional_int(s.status.is_under_maintenance), s.status.extra_json)
+                 for s in samples])
             self._conn.executemany(
                 "INSERT INTO transitions(connector_id, ts_utc, prev_state, new_state, "
                 "prev_ts_utc, uncertain) VALUES (?,?,?,?,?,?)",
@@ -312,33 +455,84 @@ class Storage:
                 [(g.connector_id, to_db(g.from_ts), to_db(g.to_ts)) for g in gaps])
         return poll_id
 
-    def samples(self, connector_ids: set[str]) -> list[Sample]:
+    def samples(self, connector_ids: set[str], since: datetime | None = None,
+                until: datetime | None = None) -> list[Sample]:
+        if not connector_ids:
+            return []
+        window, params = _window(since, until)
         with self._lock:
             rows = self._conn.execute(
-                "SELECT poll_id, connector_id, ts_utc, state FROM samples "
-                "ORDER BY ts_utc, connector_id").fetchall()
-        return [Sample(r[0], r[1], from_db(r[2]), r[3]) for r in rows if r[1] in connector_ids]
+                f"SELECT poll_id, connector_id, ts_utc, state FROM samples "
+                f"WHERE connector_id IN ({_in(connector_ids)}){window} "
+                f"ORDER BY ts_utc, connector_id", [*connector_ids, *params]).fetchall()
+        return [Sample(r[0], r[1], from_db(r[2]), r[3]) for r in rows]
 
-    def transitions(self, connector_ids: set[str]) -> list[Transition]:
+    def state_counts(self, connector_ids: set[str], since: datetime | None = None,
+                     until: datetime | None = None) -> dict[str, dict[str, int]]:
+        """connector_id -> state -> number of samples, aggregated in SQL (cheap for every
+        site at once)."""
+        if not connector_ids:
+            return {}
+        window, params = _window(since, until)
         with self._lock:
             rows = self._conn.execute(
-                "SELECT connector_id, ts_utc, prev_state, new_state, prev_ts_utc, uncertain "
-                "FROM transitions ORDER BY connector_id, ts_utc, id").fetchall()
+                f"SELECT connector_id, state, COUNT(*) FROM samples "
+                f"WHERE connector_id IN ({_in(connector_ids)}){window} "
+                f"GROUP BY connector_id, state", [*connector_ids, *params]).fetchall()
+        counts: dict[str, dict[str, int]] = {}
+        for connector_id, state, n in rows:
+            counts.setdefault(connector_id, {})[state] = n
+        return counts
+
+    def first_sample_time(self, connector_ids: set[str]) -> datetime | None:
+        if not connector_ids:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT MIN(ts_utc) FROM samples WHERE connector_id IN ({_in(connector_ids)})",
+                list(connector_ids)).fetchone()
+        return None if row[0] is None else from_db(row[0])
+
+    def transitions(self, connector_ids: set[str], since: datetime | None = None,
+                    until: datetime | None = None) -> list[Transition]:
+        if not connector_ids:
+            return []
+        window, params = _window(since, until)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT connector_id, ts_utc, prev_state, new_state, prev_ts_utc, uncertain "
+                f"FROM transitions WHERE connector_id IN ({_in(connector_ids)}){window} "
+                f"ORDER BY connector_id, ts_utc, id", [*connector_ids, *params]).fetchall()
         return [Transition(r[0], from_db(r[1]), r[2], r[3],
                            None if r[4] is None else from_db(r[4]), bool(r[5]))
-                for r in rows if r[0] in connector_ids]
+                for r in rows]
 
-    def gaps(self, connector_ids: set[str]) -> list[Gap]:
+    def gaps(self, connector_ids: set[str], since: datetime | None = None,
+             until: datetime | None = None) -> list[Gap]:
+        """Gaps overlapping the window (a gap reaching into it still hides changes)."""
+        if not connector_ids:
+            return []
+        sql, params = "", []
+        if since is not None:
+            sql += " AND to_ts_utc > ?"
+            params.append(to_db(since))
+        if until is not None:
+            sql += " AND from_ts_utc < ?"
+            params.append(to_db(until))
         with self._lock:
             rows = self._conn.execute(
-                "SELECT connector_id, from_ts_utc, to_ts_utc FROM gaps ORDER BY from_ts_utc"
-            ).fetchall()
-        return [Gap(r[0], from_db(r[1]), from_db(r[2])) for r in rows if r[0] in connector_ids]
+                f"SELECT connector_id, from_ts_utc, to_ts_utc FROM gaps "
+                f"WHERE connector_id IN ({_in(connector_ids)}){sql} ORDER BY from_ts_utc",
+                [*connector_ids, *params]).fetchall()
+        return [Gap(r[0], from_db(r[1]), from_db(r[2])) for r in rows]
 
-    def current_status(self) -> list[CurrentStatus]:
+    def current_status(self, connector_ids: set[str] | None = None) -> list[CurrentStatus]:
+        """Latest state of each catalog connector (or of the given ones) that has a sample."""
         latest = self.latest_samples()
         result = []
         for entry in self.catalog():
+            if connector_ids is not None and entry.connector_id not in connector_ids:
+                continue
             if entry.connector_id not in latest:
                 continue
             sampled_at, state = latest[entry.connector_id]
@@ -352,6 +546,78 @@ class Storage:
                 since_uncertain=True if row is None else bool(row[1]),
                 tariff=self.current_tariff(entry.connector_id)))
         return result
+
+    # ----- imported snapshots (writers run inside transaction()) ----------------------
+
+    def add_snapshot_poll_in_tx(self, ts: datetime, rows_total: int,
+                                samples: list[SampleWrite]) -> int:
+        """Store one imported snapshot as a 'snapshot' poll with its samples, nothing derived."""
+        self._require_tx()
+        now = to_db(ts)
+        poll_id = self._conn.execute(
+            "INSERT INTO poll_log(ts_utc, kind, ok, rows_total, rows_in_scope) "
+            "VALUES (?, ?, 1, ?, ?)", (now, POLL_SNAPSHOT, rows_total, len(samples))).lastrowid
+        self._conn.executemany(
+            "INSERT INTO samples(poll_id, connector_id, ts_utc, state, availability, "
+            "charging_state, charging_state_name, is_under_maintenance, extra_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            [(poll_id, s.status.connector_id, now, s.state, s.status.availability,
+              s.status.charging_state, s.status.charging_state_name,
+              _optional_int(s.status.is_under_maintenance), s.status.extra_json)
+             for s in samples])
+        return poll_id
+
+    def sample_window_in_tx(self, connector_id: str, first: datetime,
+                            last: datetime) -> SampleWindow:
+        """The samples of `connector_id` from `first` through the first one after `last`."""
+        self._require_tx()
+        anchor = self._conn.execute(
+            "SELECT ts_utc, state FROM samples WHERE connector_id=? AND ts_utc < ? "
+            "ORDER BY ts_utc DESC LIMIT 1", (connector_id, to_db(first))).fetchone()
+        end = self._conn.execute(
+            "SELECT ts_utc FROM samples WHERE connector_id=? AND ts_utc > ? "
+            "ORDER BY ts_utc LIMIT 1", (connector_id, to_db(last))).fetchone()
+        upper = to_db(last) if end is None else end[0]
+        rows = self._conn.execute(
+            "SELECT ts_utc, state FROM samples WHERE connector_id=? AND ts_utc >= ? "
+            "AND ts_utc <= ? ORDER BY ts_utc", (connector_id, to_db(first), upper)).fetchall()
+        return SampleWindow(connector_id,
+                            None if anchor is None else (from_db(anchor[0]), anchor[1]),
+                            [(from_db(r[0]), r[1]) for r in rows],
+                            None if end is None else from_db(end[0]))
+
+    def replace_derived_in_tx(self, window: SampleWindow, transitions: list[Transition],
+                              gaps: list[Gap]) -> None:
+        """Swap the transitions and gaps that the window's samples produce for new ones.
+
+        Replaced: transitions dated on a window sample, and gaps starting at the anchor or at a
+        window sample other than `end` (a gap is dated by the sample before it).
+        """
+        self._require_tx()
+        first = to_db(window.samples[0][0])
+        gaps_from = first if window.anchor is None else to_db(window.anchor[0])
+        if window.end is None:
+            self._conn.execute("DELETE FROM transitions WHERE connector_id=? AND ts_utc >= ?",
+                               (window.connector_id, first))
+            self._conn.execute("DELETE FROM gaps WHERE connector_id=? AND from_ts_utc >= ?",
+                               (window.connector_id, gaps_from))
+        else:
+            end = to_db(window.end)
+            self._conn.execute(
+                "DELETE FROM transitions WHERE connector_id=? AND ts_utc >= ? AND ts_utc <= ?",
+                (window.connector_id, first, end))
+            self._conn.execute(
+                "DELETE FROM gaps WHERE connector_id=? AND from_ts_utc >= ? AND from_ts_utc < ?",
+                (window.connector_id, gaps_from, end))
+        self._conn.executemany(
+            "INSERT INTO transitions(connector_id, ts_utc, prev_state, new_state, "
+            "prev_ts_utc, uncertain) VALUES (?,?,?,?,?,?)",
+            [(t.connector_id, to_db(t.ts), t.prev_state, t.new_state,
+              None if t.prev_ts is None else to_db(t.prev_ts), int(t.uncertain))
+             for t in transitions])
+        self._conn.executemany(
+            "INSERT INTO gaps(connector_id, from_ts_utc, to_ts_utc) VALUES (?,?,?)",
+            [(g.connector_id, to_db(g.from_ts), to_db(g.to_ts)) for g in gaps])
 
     # ----- subscriptions --------------------------------------------------------------
 
@@ -391,8 +657,12 @@ class Storage:
         return None if row is None else row[0]
 
     def set_state(self, key: str, value: str, ts: datetime) -> None:
-        with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT INTO service_state(key, value, updated_utc) VALUES (?,?,?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
-                "updated_utc=excluded.updated_utc", (key, value, to_db(ts)))
+        with self.transaction():
+            self.set_state_in_tx(key, value, ts)
+
+    def set_state_in_tx(self, key: str, value: str, ts: datetime) -> None:
+        self._require_tx()
+        self._conn.execute(
+            "INSERT INTO service_state(key, value, updated_utc) VALUES (?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_utc=excluded.updated_utc", (key, value, to_db(ts)))

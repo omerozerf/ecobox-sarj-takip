@@ -1,5 +1,6 @@
 """Domain records parsed from the Ecobox map API payloads."""
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -41,6 +42,12 @@ class ConnectorInfo:
     has_barrier: bool
     maintenance_title: str | None
     maintenance_end_at: str | None
+    socket_code: str | None = None
+    is_under_maintenance: bool | None = None
+    reservation_status: str | None = None
+    """connectorReservationStatus as JSON text; None when the API gives none."""
+    nearby_reservations: str | None = None
+    """nearByConnectorReservations as JSON text; None when the list is empty or missing."""
 
     @property
     def is_ac(self) -> bool:
@@ -59,7 +66,18 @@ class ConnectorInfo:
             has_barrier=bool(raw.get("hasBarrier")),
             maintenance_title=raw.get("maintenanceTitle"),
             maintenance_end_at=raw.get("maintenanceEndAt"),
+            socket_code=raw.get("socketCode"),
+            is_under_maintenance=raw.get("isUnderMaintenance"),
+            reservation_status=_json_or_none(raw.get("connectorReservationStatus")),
+            nearby_reservations=_json_or_none(raw.get("nearByConnectorReservations")),
         )
+
+
+def _json_or_none(value: Any) -> str | None:
+    """JSON text of a value worth keeping; None, empty lists and empty dicts become None."""
+    if value is None or value == [] or value == {}:
+        return None
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 @dataclass(frozen=True)
@@ -74,6 +92,9 @@ class ChargePoint:
     is_public: bool
     connectors: tuple[ConnectorInfo, ...]
     raw: dict[str, Any] = field(compare=False, repr=False)
+    is_device_in_working_hours: bool | None = None
+    supports_auto_charge: bool | None = None
+    has_available_connectors: bool | None = None
 
     @classmethod
     def from_api(cls, raw: dict[str, Any]) -> "ChargePoint":
@@ -89,7 +110,17 @@ class ChargePoint:
             is_public=bool(raw.get("isPublic")),
             connectors=tuple(ConnectorInfo.from_api(c, cp_id) for c in raw["connectors"]),
             raw=raw,
+            is_device_in_working_hours=raw.get("isDeviceInWorkingHours"),
+            supports_auto_charge=raw.get("supportsAutoCharge"),
+            has_available_connectors=raw.get("hasAvailableConnectors"),
         )
+
+
+# Status-row keys the recorder stores in their own columns; anything else the API starts
+# sending is kept verbatim in samples.extra_json.
+_KNOWN_STATUS_KEYS = frozenset({
+    "chargePointId", "connectorId", "connectorOrder", "availability", "connectorChargingState",
+    "connectorChargingStateDisplayName", "isUnderMaintenance"})
 
 
 @dataclass(frozen=True)
@@ -103,6 +134,8 @@ class ConnectorStatus:
     charging_state: int | None
     charging_state_name: str | None
     is_under_maintenance: bool | None
+    extra_json: str | None = field(default=None, compare=False)
+    """Fields beyond the known ones, as JSON text; None while the API sends nothing new."""
 
     @classmethod
     def from_api(cls, raw: dict[str, Any]) -> "ConnectorStatus":
@@ -114,6 +147,8 @@ class ConnectorStatus:
             charging_state=raw.get("connectorChargingState"),
             charging_state_name=raw.get("connectorChargingStateDisplayName"),
             is_under_maintenance=raw.get("isUnderMaintenance"),
+            extra_json=_json_or_none({k: v for k, v in raw.items()
+                                      if k not in _KNOWN_STATUS_KEYS}),
         )
 
 

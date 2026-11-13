@@ -1,0 +1,3 @@
+# Only the charts need a third-party package; the recorder and text commands use the
+# standard library. Install into the project-local venv with scripts/setup_venv.sh.
+matplotlib>=3.10,<4

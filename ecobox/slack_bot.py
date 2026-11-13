@@ -12,6 +12,7 @@ from typing import Any
 from ecobox import texts
 from ecobox.clock import Clock
 from ecobox.commands import SLACK, CommandHandler, Conversation
+from ecobox.replies import Reply
 from ecobox.slack import SlackClient, SlackError, ts_key, unescape
 from ecobox.storage import Storage
 
@@ -37,11 +38,24 @@ class SlackOutbox:
     def send(self, chat_id: int | str, text: str) -> None:
         self._slack.post_message(str(chat_id), text)
 
+    def send_reply(self, chat_id: int | str, reply: Reply) -> None:
+        """A failed image upload is reported in the channel instead of raised: raising would
+        stop the transport (missing_scope is fatal) or replay the command after a restart."""
+        self.send(chat_id, reply.text)
+        for image in reply.images:
+            try:
+                self._slack.upload_file(str(chat_id), image.data, image.filename, image.caption)
+            except SlackError as exc:
+                log.warning("Slack image upload failed: %s", exc)
+                self.send(chat_id, texts.image_failed(missing_scope=exc.error == "missing_scope"))
+                return
+
 
 class SlackBot:
     def __init__(self, slack: SlackClient, commands: CommandHandler, storage: Storage,
                  clock: Clock, owner_user_id: str, channel_name: str):
         self._slack = slack
+        self._outbox = SlackOutbox(slack)
         self._commands = commands
         self._storage = storage
         self._clock = clock
@@ -107,7 +121,7 @@ class SlackBot:
             if self._is_owner_command(message):
                 reply = self._reply(message, conversation)
                 if reply is not None:
-                    self._slack.post_message(channel_id, reply)
+                    self._outbox.send_reply(channel_id, reply)
                     answered += 1
             last_ts = message["ts"]
             self._set(STATE_LAST_TS, last_ts)
@@ -119,7 +133,7 @@ class SlackBot:
                 and message.get("user") == self._owner
                 and bool(message.get("text", "").strip()))
 
-    def _reply(self, message: dict[str, Any], conversation: Conversation) -> str | None:
+    def _reply(self, message: dict[str, Any], conversation: Conversation) -> Reply | None:
         try:
             return self._commands.reply(unescape(message["text"]), conversation)
         except Exception:  # a bad command must not block the messages after it

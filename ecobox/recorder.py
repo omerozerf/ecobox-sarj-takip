@@ -10,6 +10,7 @@ from ecobox.api import EcoboxApi
 from ecobox.clock import Clock
 from ecobox.records import Gap, Transition
 from ecobox.scope import ScopeFilter
+from ecobox.sequence import step
 from ecobox.state import normalise
 from ecobox.storage import SampleWrite, Storage
 
@@ -30,6 +31,12 @@ class PollResult:
 
 
 class Recorder:
+    """Samples every connector of the record scope (the stored catalog) on each poll.
+
+    The record scope is every Ecobox site by default; what the bot shows is a separate,
+    narrower display scope (see `ecobox.view`).
+    """
+
     def __init__(self, api: EcoboxApi, storage: Storage, scope: ScopeFilter, clock: Clock,
                  gap_threshold_s: float, listeners: list[TransitionListener] | None = None):
         self._api = api
@@ -43,7 +50,7 @@ class Recorder:
         self._listeners.append(listener)
 
     def refresh_catalog(self) -> int:
-        """Fetch the station list and store the in-scope part. Returns connector count."""
+        """Fetch the station list and store the record-scope part. Returns connector count."""
         started, ts = time.monotonic(), self._clock.now()
         try:
             charge_points = self._api.fetch_stations()
@@ -64,30 +71,27 @@ class Recorder:
             raise
 
         in_scope = {entry.connector_id for entry in self._storage.catalog()}
-        previous = self._storage.latest_samples()
         samples: list[SampleWrite] = []
         transitions: list[Transition] = []
         gaps: list[Gap] = []
-        for status in statuses:
-            if status.connector_id not in in_scope:
-                continue
-            state = normalise(status.availability, status.is_under_maintenance,
-                              status.charging_state)
-            samples.append(SampleWrite(status, state))
-            prior = previous.get(status.connector_id)
-            if prior is None:
-                transitions.append(Transition(status.connector_id, ts, None, state, None, True))
-                continue
-            prior_ts, prior_state = prior
-            gap = ts - prior_ts > self._gap_threshold
-            if gap:
-                gaps.append(Gap(status.connector_id, prior_ts, ts))
-            if state != prior_state:
-                transitions.append(Transition(status.connector_id, ts, prior_state, state,
-                                              prior_ts, gap))
-
-        poll_id = self._storage.record_status_poll(ts, len(statuses), _elapsed_ms(started),
-                                                   samples, transitions, gaps)
+        # Reading the previous samples and writing this poll is one unit: the snapshot importer
+        # may insert older samples in between, which would leave this poll's priors stale.
+        with self._storage.transaction():
+            previous = self._storage.latest_samples()
+            for status in statuses:
+                if status.connector_id not in in_scope:
+                    continue
+                state = normalise(status.availability, status.is_under_maintenance,
+                                  status.charging_state)
+                samples.append(SampleWrite(status, state))
+                transition, gap = step(status.connector_id, previous.get(status.connector_id),
+                                       ts, state, self._gap_threshold)
+                if transition is not None:
+                    transitions.append(transition)
+                if gap is not None:
+                    gaps.append(gap)
+            poll_id = self._storage.record_status_poll(ts, len(statuses), _elapsed_ms(started),
+                                                       samples, transitions, gaps)
         seen = {s.status.connector_id for s in samples}
         result = PollResult(poll_id, ts, len(samples), transitions, gaps, in_scope - seen)
         self._notify(transitions)

@@ -11,19 +11,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
-from helpers import (EGO, F_BLOK_2, FIXTURES, GAP_S, POLL_S, FakeSlack, FakeTelegram, World,
-                     message)
+from helpers import (EGO, F_BLOK_2, FIXTURES, POLL_S, FakeSlack, FakeTelegram, World,
+                     display_scope, make_commands, message)
 
 from ecobox.bot import TelegramBot, TelegramOutbox
-from ecobox.commands import SLACK, TELEGRAM, CommandHandler, Conversation, parse_command
+from ecobox.commands import SLACK, TELEGRAM, Conversation, parse_command
 from ecobox.config import Config
-from ecobox.estimate import ChargeEstimator
 from ecobox.notifier import SubscriptionNotifier
+from ecobox.replies import Reply
 from ecobox.service import Backoff, SlackLoop
 from ecobox.slack import HttpSlackClient, SlackError, SlackRateLimited
 from ecobox.slack_bot import (STATE_CHANNEL_ID, STATE_LAST_TS, STATE_READY, SlackBot,
                               SlackOutbox)
-from ecobox.stats import Statistics
 from ecobox.storage import Storage
 
 OWNER_SLACK = "U0OWNER"
@@ -34,11 +33,6 @@ OWNER_TELEGRAM = 1111
 def quiet(test: unittest.TestCase) -> None:
     logging.disable(logging.CRITICAL)
     test.addCleanup(logging.disable, logging.NOTSET)
-
-
-def make_commands(world: World) -> CommandHandler:
-    return CommandHandler(world.storage, Statistics(world.storage, GAP_S),
-                          ChargeEstimator(10.6, 0.95, True), world.clock, True)
 
 
 class ParseCommandTest(unittest.TestCase):
@@ -70,23 +64,26 @@ class SlackCommandsTest(unittest.TestCase):
 
     def test_help_shows_plain_word_commands(self):
         for text in ("yardım", "yardim", "!yardim", "/yardim"):
-            help_text = self.commands.reply(text, self.chat)
+            help_text = self.commands.reply(text, self.chat).text
             self.assertIn("\ndurum – ", help_text)
             self.assertIn("haberver ego", help_text)
             self.assertIn("tahmin 20 80", help_text)
             self.assertNotIn("/", help_text.replace("/çıkarma", ""))
 
     def test_unknown_command_and_usage_use_plain_words(self):
-        self.assertIn("\niptal – ", self.commands.reply("merhaba", self.chat))
-        self.assertIn("ör. tahmin 20 80", self.commands.reply("tahmin 80", self.chat))
+        self.assertIn("\niptal – ", self.ask("merhaba"))
+        self.assertIn("ör. tahmin 20 80", self.ask("tahmin 80"))
+
+    def ask(self, text: str) -> str:
+        return self.commands.reply(text, self.chat).text
 
     def test_every_command_works_without_slash(self):
-        self.assertIn("Boş AC priz: 1/12", self.commands.reply("Durum", self.chat))
-        self.assertIn("haber vereceğim", self.commands.reply("haberver f blok", self.chat))
-        self.assertEqual(self.commands.reply("İPTAL", self.chat), "Abonelik iptal edildi.")
-        self.assertIn("İstatistik: f blok (AC)", self.commands.reply("istatistik f blok",
-                                                                     self.chat))
-        self.assertIn("57.0 kWh", self.commands.reply("tahmin 20 80", self.chat))
+        self.assertIn("🟢 1/12 AC priz boş", self.ask("Durum"))
+        self.assertIn("haber vereceğim", self.ask("haberver f blok"))
+        self.assertEqual(self.ask("İPTAL"), "Abonelik iptal edildi.")
+        self.assertIn("📊 F blok (AC)", self.ask("istatistik f blok"))
+        self.assertIn("🔎 F blok", self.ask("analiz f blok"))
+        self.assertIn("⚡ 57.0 kWh", self.ask("tahmin 20 80"))
 
 
 class SlackBotTest(unittest.TestCase):
@@ -165,7 +162,7 @@ class SlackBotTest(unittest.TestCase):
         self.slack.say(OWNER_SLACK, "yardım")
         self.assertEqual(bot.poll_once(), 2)
         replies = [text for _, text in self.slack.posted[posted_before:]]
-        self.assertIn("Boş AC priz: 1/12", replies[0])
+        self.assertIn("🟢 1/12 AC priz boş", replies[0])
         self.assertIn("haberver ego", replies[1])
         self.assertEqual(bot.poll_once(), 0)  # its own replies are not commands
 
@@ -198,7 +195,7 @@ class SlackBotTest(unittest.TestCase):
         self.slack.say(OWNER_SLACK, "durum")
         self.slack.say(OWNER_SLACK, "yardim")
         with mock.patch.object(self.commands, "reply",
-                               side_effect=[RuntimeError("boom"), "ok"]):
+                               side_effect=[RuntimeError("boom"), Reply("ok")]):
             self.assertEqual(bot.poll_once(), 1)
         self.assertEqual(self.slack.posted[-1][1], "ok")
 
@@ -338,7 +335,7 @@ class PerTransportRoutingTest(unittest.TestCase):
         self.slack_bot = SlackBot(self.slack, commands, self.world.storage, self.world.clock,
                                   OWNER_SLACK, "ecobox-sarj")
         self.slack_bot.poll_once()  # bootstrap
-        self.notifier = SubscriptionNotifier(self.world.storage, {
+        self.notifier = SubscriptionNotifier(self.world.storage, display_scope(self.world), {
             TELEGRAM: TelegramOutbox(self.telegram), SLACK: SlackOutbox(self.slack)})
         self.world.recorder.add_listener(self.notifier.on_transitions)
         self.world.poll()
@@ -355,7 +352,7 @@ class PerTransportRoutingTest(unittest.TestCase):
         return self.slack.posted[-1][1]
 
     def slack_notifications(self):
-        return [text for _, text in self.slack.posted if text.startswith("Boşaldı")]
+        return [text for _, text in self.slack.posted if text.startswith("🟢 Boşaldı")]
 
     def test_both_transports_fire_on_their_own_side(self):
         self.assertIn("haber vereceğim", self.telegram_says("/haberver ego"))
@@ -366,16 +363,16 @@ class PerTransportRoutingTest(unittest.TestCase):
 
         self.world.poll({F_BLOK_2: "available"})  # F Blok: Slack fires, Telegram waits
         [slack_note] = self.slack_notifications()
-        self.assertIn("Boşaldı: Hacettepe - F Blok 2", slack_note)
-        self.assertIn("tekrar için haberver.", slack_note)
+        self.assertIn("Boşaldı: F Blok 2\n", slack_note)
+        self.assertIn("Tekrar haber için: haberver", slack_note)
         self.assertEqual(self.telegram.sent, [])
 
         self.world.clock.advance(POLL_S)
         self.world.poll({F_BLOK_2: "available", EGO[0]: "available"})  # Ego: Telegram fires
         [(chat, telegram_note)] = self.telegram.sent
         self.assertEqual(chat, OWNER_TELEGRAM)
-        self.assertIn("Boşaldı: Hacettepe Ego - 1 Ac", telegram_note)
-        self.assertIn("tekrar için /haberver.", telegram_note)
+        self.assertIn("Boşaldı: Ego 1\n", telegram_note)
+        self.assertIn("Tekrar haber için: /haberver", telegram_note)
         self.assertEqual(len(self.slack_notifications()), 1)
         self.assertEqual(self.world.storage.subscriptions(), [])
 
@@ -394,7 +391,7 @@ class PerTransportRoutingTest(unittest.TestCase):
 
     def test_subscription_waits_while_its_transport_is_not_running(self):
         self.slack_says("haberver")
-        telegram_only = SubscriptionNotifier(self.world.storage,
+        telegram_only = SubscriptionNotifier(self.world.storage, display_scope(self.world),
                                              {TELEGRAM: TelegramOutbox(self.telegram)})
         self.world.recorder._listeners = [telegram_only.on_transitions]
         self.telegram.sent.clear()
