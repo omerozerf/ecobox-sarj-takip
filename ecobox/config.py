@@ -57,6 +57,8 @@ class Config:
     snapshot_branch: str = "data"
     snapshot_checkout: Path = PROJECT_ROOT / "data" / "remote"
     snapshot_import_interval_s: float = 3600.0
+    collector_stale_s: float = 1800.0
+    """No snapshot for this long means the remote collector stopped; 0 turns the alert off."""
 
     @property
     def gap_threshold_s(self) -> float:
@@ -113,6 +115,7 @@ class Config:
             snapshot_branch=get("ECOBOX_SNAPSHOT_BRANCH") or cls.snapshot_branch,
             snapshot_import_interval_s=float(get("ECOBOX_SNAPSHOT_IMPORT_S")
                                              or cls.snapshot_import_interval_s),
+            collector_stale_s=float(get("ECOBOX_COLLECTOR_STALE_S") or cls.collector_stale_s),
         )
 
 

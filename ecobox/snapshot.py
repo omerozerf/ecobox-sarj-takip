@@ -81,6 +81,13 @@ def read_snapshots(directory: Path,
             yield decode_line(line, index)
 
 
+def newest_snapshot_time(directory: Path) -> datetime:
+    """When the most recent stored poll was taken."""
+    last_line = sorted(directory.glob("*.jsonl"))[-1].read_text().splitlines()[-1]
+    stamp = json.loads(last_line)["t"]
+    return datetime.strptime(stamp, TIMESTAMP_FORMAT).replace(tzinfo=timezone.utc)
+
+
 def main(argv: list[str]) -> None:
     directory = Path(argv[1])
     rows = HttpEcoboxApi(REQUEST_TIMEOUT_S).fetch_status_rows()

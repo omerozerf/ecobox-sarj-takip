@@ -34,7 +34,7 @@ twice even if that cursor is lost.
 
 import logging
 from bisect import bisect_left
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -194,12 +194,21 @@ def _snapshot(ts: datetime, rows: list[RawRow], catalog: dict[str, CatalogEntry]
 class SnapshotImportJob:
     """Refresh the source, then import: one step of the service's hourly loop or the CLI."""
 
-    def __init__(self, source: SnapshotSource, importer: SnapshotImporter):
+    def __init__(self, source: SnapshotSource, importer: SnapshotImporter,
+                 watchers: Sequence[Callable[[Path], object]] = ()):
         self._source = source
         self._importer = importer
+        self._watchers = watchers
+        """Told about every refreshed directory before the import (the collector watch)."""
 
     def run(self) -> ImportResult:
-        result = self._importer.import_from(self._source.refresh())
+        directory = self._source.refresh()
+        for watch in self._watchers:
+            try:
+                watch(directory)
+            except Exception:  # a failing watcher must not cost the import
+                log.exception("snapshot watcher crashed")
+        result = self._importer.import_from(directory)
         log.info("snapshot import: %d read, %d used (%d samples), %d local, %d already, "
                  "%d empty, %d deferred, %d unknown connectors", result.read, result.used,
                  result.samples, result.skipped_local, result.skipped_imported,

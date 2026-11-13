@@ -212,6 +212,19 @@ def notification_text(entries: list[CatalogEntry], at: datetime, free: int, tota
                       f"Tekrar haber için: {_command(prefix, 'haberver', term)}"])
 
 
+def collector_stopped(newest: datetime, now: datetime) -> str:
+    """The GitHub collector wrote nothing for a while; the Mac's own record is unaffected."""
+    return "\n".join([
+        "⚠️ GitHub toplayıcı durmuş",
+        f"Son kayıt {clock_text(newest)} ({duration_text(now - newest)} önce)",
+        "Mac açıkken veri kaybı yok.",
+        "Başlatmak için: gh workflow run collect.yml"])
+
+
+def collector_back(newest: datetime, _now: datetime) -> str:
+    return f"✅ GitHub toplayıcı yeniden çalışıyor\nSon kayıt {clock_text(newest)}"
+
+
 def unknown_command(prefix: str) -> str:
     return (f"Bu komutu tanımıyorum.\nKomutlar için: {prefix}yardim\n"
             f"Bir konum yazman da yeter, ör. {LOCATION_EXAMPLE}")

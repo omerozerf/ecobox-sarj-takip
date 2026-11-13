@@ -14,6 +14,7 @@ from ecobox.charts import ChartBook
 from ecobox.commands import SLACK, TELEGRAM, CommandHandler, Conversation
 from ecobox.clock import SystemClock
 from ecobox.config import Config
+from ecobox.collector_watch import CollectorWatch
 from ecobox.digest import DigestComposer, DigestSchedule, DigestTarget, WeeklyDigest
 from ecobox.estimate import ChargeEstimator
 from ecobox.importer import SnapshotImporter, SnapshotImportJob
@@ -125,10 +126,12 @@ def _statistics(config: Config, storage: Storage) -> Statistics:
     return Statistics(storage, config.gap_threshold_s)
 
 
-def _snapshot_job(config: Config, storage: Storage, clock: SystemClock,
-                  source: SnapshotSource) -> SnapshotImportJob:
+def _snapshot_job(config: Config, storage: Storage, clock: SystemClock, source: SnapshotSource,
+                  alert_targets: list[DigestTarget] = ()) -> SnapshotImportJob:
+    watchers = ([CollectorWatch(storage, clock, config.collector_stale_s, alert_targets).check]
+                if alert_targets and config.collector_stale_s > 0 else [])
     return SnapshotImportJob(source, SnapshotImporter(storage, clock, config.poll_interval_s,
-                                                      config.gap_threshold_s))
+                                                      config.gap_threshold_s), watchers)
 
 
 def _git_source(config: Config) -> SnapshotSource | None:
@@ -185,7 +188,7 @@ def cmd_run(_args, config: Config, storage: Storage) -> int:
     if source is not None:
         # Its own thread: a slow clone or a long backfill never holds the recorder up (the
         # importer only takes the storage lock for one short transaction per UTC day).
-        job = _snapshot_job(config, storage, clock, source)
+        job = _snapshot_job(config, storage, clock, source, digest_targets)
         front_ends["snapshot-import"] = PeriodicLoop("snapshot import", job.run,
                                                      config.snapshot_import_interval_s)
     loop = RecorderLoop(recorder, storage, clock, config.poll_interval_s,

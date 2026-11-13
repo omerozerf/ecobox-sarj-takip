@@ -86,6 +86,10 @@ Zincir koparsa `watchdog` iş akışı (saatte bir, zamanlayıcı çalışırsa)
 elle başlatmak için `gh workflow run collect.yml`, durdurmak için çalışan işi iptal edin.
 Bu kaynak Mac'in yerini tutmaz, yalnızca boşluklarını doldurur.
 
+Zincir durursa servis bunu içe aktarma sırasında fark eder: `data` dalındaki son kayıt
+`ECOBOX_COLLECTOR_STALE_S` saniyeden (varsayılan 30 dk) eskiyse bota bir kez "GitHub toplayıcı
+durmuş" uyarısı, kayıt yeniden akınca bir kez "yeniden çalışıyor" mesajı gider.
+
 `.env`'de `ECOBOX_SNAPSHOT_REPO_URL` doluysa servis açılışta ve sonra saatte bir
 (`ECOBOX_SNAPSHOT_IMPORT_S`) `data` dalını `data/remote` altına girişsiz https ile çeker (sistemin
 `git`'i; ilk seferde sığ klon, sonra yalnızca yenileri) ve görüntüleri veritabanına ekler. Bu iş
