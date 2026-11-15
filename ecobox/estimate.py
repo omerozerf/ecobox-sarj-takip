@@ -20,10 +20,32 @@ class ChargeEstimate:
     """Reported separately: the API does not say what unit servicePrice is in."""
 
 
+@dataclass(frozen=True)
+class EnergyCurve:
+    """Station energy per displayed battery percent, with a costlier top band.
+
+    Measured on 2026-11-13 (32 % -> 100 %, 66.26 kWh): 0.94 kWh/% up to 84 %, 1.10 kWh/% above,
+    at constant power. Where inside 84-100 the rate really changes was not observed.
+    """
+    kwh_per_percent: float
+    top_band_start_pct: float
+    top_band_kwh_per_percent: float
+
+    @classmethod
+    def flat(cls, kwh_per_percent: float) -> "EnergyCurve":
+        return cls(kwh_per_percent, 100.0, kwh_per_percent)
+
+    def energy_kwh(self, start_pct: float, target_pct: float) -> float:
+        knee = self.top_band_start_pct
+        below = min(target_pct, knee) - min(start_pct, knee)
+        above = max(target_pct, knee) - max(start_pct, knee)
+        return below * self.kwh_per_percent + above * self.top_band_kwh_per_percent
+
+
 class ChargeEstimator:
-    def __init__(self, car_charge_kw: float, kwh_per_percent: float, price_includes_vat: bool):
+    def __init__(self, car_charge_kw: float, curve: EnergyCurve, price_includes_vat: bool):
         self._car_kw = car_charge_kw
-        self._kwh_per_percent = kwh_per_percent
+        self._curve = curve
         self._price_includes_vat = price_includes_vat
 
     def estimate(self, start_pct: float, target_pct: float, now: datetime,
@@ -32,7 +54,7 @@ class ChargeEstimator:
             raise ValueError("need 0 <= start < target <= 100")
         effective_kw = self._car_kw if connector_power_kw is None else min(
             self._car_kw, connector_power_kw)
-        energy = (target_pct - start_pct) * self._kwh_per_percent
+        energy = self._curve.energy_kwh(start_pct, target_pct)
         duration = timedelta(hours=energy / effective_kw)
         cost = currency = service = None
         if tariff is not None:

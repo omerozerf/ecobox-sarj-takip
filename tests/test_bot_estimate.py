@@ -7,7 +7,7 @@ from helpers import (EGO, F_BLOK_2, POLL_S, FakeTelegram, World, display_scope, 
 
 from ecobox.bot import TelegramBot, TelegramOutbox
 from ecobox.commands import TELEGRAM, Conversation
-from ecobox.estimate import ChargeEstimator
+from ecobox.estimate import ChargeEstimator, EnergyCurve
 from ecobox.models import Tariff
 from ecobox.notifier import SubscriptionNotifier
 
@@ -18,7 +18,7 @@ TARIFF = Tariff("t1", 9.29, 2, 0, "TRY", 20, None)
 
 class EstimateTest(unittest.TestCase):
     def setUp(self):
-        self.estimator = ChargeEstimator(10.6, 0.95, price_includes_vat=True)
+        self.estimator = ChargeEstimator(10.6, EnergyCurve.flat(0.95), price_includes_vat=True)
         self.now = datetime(2026, 11, 10, 6, 0, tzinfo=UTC)
 
     def test_arithmetic(self):
@@ -36,10 +36,18 @@ class EstimateTest(unittest.TestCase):
         self.assertIsNone(e.cost)
 
     def test_slow_socket_limits_power_and_vat_option(self):
-        e = ChargeEstimator(10.6, 0.95, price_includes_vat=False).estimate(
+        e = ChargeEstimator(10.6, EnergyCurve.flat(0.95), price_includes_vat=False).estimate(
             50, 60, self.now, 3.7, TARIFF)
         self.assertEqual(e.effective_kw, 3.7)
         self.assertAlmostEqual(e.cost, 9.5 * 9.29 * 1.2)
+
+    def test_top_band_reproduces_the_measured_full_session(self):
+        # 2026-11-13: 32 % -> 100 % took 66.26 kWh; 48.72 kWh of it up to 84 %.
+        curve = EnergyCurve(0.937, 84, 1.096)
+        self.assertAlmostEqual(curve.energy_kwh(32, 84), 48.72, places=1)
+        self.assertAlmostEqual(curve.energy_kwh(32, 100), 66.26, places=1)
+        self.assertAlmostEqual(curve.energy_kwh(90, 100), 10.96)
+        self.assertAlmostEqual(EnergyCurve.flat(0.95).energy_kwh(20, 100), 76.0)
 
     def test_invalid_range(self):
         for start, target in ((80, 20), (50, 50), (-1, 10), (10, 101)):

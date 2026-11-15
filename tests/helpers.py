@@ -187,12 +187,12 @@ def make_commands(world: World, renderer=None):
     """The command handler as the service builds it, display scope Hacettepe."""
     from ecobox.charts import ChartBook
     from ecobox.commands import CommandHandler
-    from ecobox.estimate import ChargeEstimator
+    from ecobox.estimate import ChargeEstimator, EnergyCurve
     from ecobox.insights import InsightEngine
     from ecobox.stats import Statistics
     from ecobox.view import DisplayScope
     stats = Statistics(world.storage, GAP_S)
-    return CommandHandler(world.storage, stats, ChargeEstimator(10.6, 0.95, True), world.clock,
+    return CommandHandler(world.storage, stats, ChargeEstimator(10.6, EnergyCurve.flat(0.95), True), world.clock,
                           DisplayScope(world.storage, HACETTEPE_TERMS), InsightEngine(stats),
                           ChartBook(stats, renderer))
 

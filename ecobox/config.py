@@ -43,8 +43,10 @@ class Config:
     slack_user_id: str | None = None
     slack_channel_name: str = "ecobox-sarj"
     slack_poll_interval_s: float = 3.0
-    car_charge_kw: float = 10.6
-    kwh_per_percent: float = 0.95
+    car_charge_kw: float = 10.7
+    kwh_per_percent: float = 0.94
+    top_band_start_pct: float = 84.0
+    top_band_kwh_per_percent: float = 1.10
     price_includes_vat: bool = True
     log_level: str = "INFO"
     digest_weekday: int | None = 0
@@ -105,6 +107,9 @@ class Config:
                                         or cls.slack_poll_interval_s),
             car_charge_kw=float(get("CAR_CHARGE_KW") or cls.car_charge_kw),
             kwh_per_percent=float(get("KWH_PER_PERCENT") or cls.kwh_per_percent),
+            top_band_start_pct=float(get("TOP_BAND_START_PCT") or cls.top_band_start_pct),
+            top_band_kwh_per_percent=float(get("TOP_BAND_KWH_PER_PERCENT")
+                                           or cls.top_band_kwh_per_percent),
             price_includes_vat=(get("PRICE_INCLUDES_VAT") or "true").lower()
             in ("1", "true", "yes", "evet"),
             log_level=get("ECOBOX_LOG_LEVEL") or cls.log_level,

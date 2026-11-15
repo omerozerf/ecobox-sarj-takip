@@ -16,7 +16,7 @@ from ecobox.clock import SystemClock
 from ecobox.config import Config
 from ecobox.collector_watch import CollectorWatch
 from ecobox.digest import DigestComposer, DigestSchedule, DigestTarget, WeeklyDigest
-from ecobox.estimate import ChargeEstimator
+from ecobox.estimate import ChargeEstimator, EnergyCurve
 from ecobox.importer import SnapshotImporter, SnapshotImportJob
 from ecobox.insights import InsightEngine
 from ecobox.recorder import Recorder
@@ -143,8 +143,9 @@ def _git_source(config: Config) -> SnapshotSource | None:
 
 
 def _estimator(config: Config) -> ChargeEstimator:
-    return ChargeEstimator(config.car_charge_kw, config.kwh_per_percent,
-                           config.price_includes_vat)
+    curve = EnergyCurve(config.kwh_per_percent, config.top_band_start_pct,
+                        config.top_band_kwh_per_percent)
+    return ChargeEstimator(config.car_charge_kw, curve, config.price_includes_vat)
 
 
 def cmd_run(_args, config: Config, storage: Storage) -> int:
