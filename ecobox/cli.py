@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 
-from ecobox import texts
+from ecobox import site_data, texts
 from ecobox.api import HttpEcoboxApi
 from ecobox.bot import TelegramBot, TelegramOutbox
 from ecobox.charts import ChartBook
@@ -24,6 +24,7 @@ from ecobox.scope import ScopeFilter
 from ecobox.notifier import Outbox, SubscriptionNotifier
 from ecobox.service import (Backoff, BotLoop, PeriodicLoop, RecorderLoop, SlackLoop,
                             StoppableLoop, run_service)
+from ecobox.site_data import SiteDataBuilder
 from ecobox.slack import HttpSlackClient
 from ecobox.slack_bot import STATE_CHANNEL_ID, SlackBot, SlackOutbox
 from ecobox.snapshot_source import (DirectorySource, GitSnapshotSource, SnapshotSource,
@@ -79,6 +80,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="GitHub'daki durum görüntülerini, bu bilgisayarın kaydı olmayan aralıklara ekle")
     snapshots.add_argument("--dir", help="git yerine bu klasördeki görüntüleri kullan "
                                          "(connectors.json ve gün dosyaları)")
+
+    site = sub.add_parser(
+        "site-data",
+        help="statik sitenin data.json dosyasını görüntülerden üret (.env ve veritabanı gerekmez)")
+    site.add_argument("--snapshots", required=True,
+                      help="connectors.json ve gün dosyalarının olduğu klasör")
+    site.add_argument("--out", required=True, help="yazılacak data.json")
+    site.add_argument("--snapshot-base-url", required=True,
+                      help="sayfanın canlı durumu okuyacağı adres; olduğu gibi yazılır")
     return parser
 
 
@@ -87,7 +97,8 @@ def main(argv: list[str] | None = None) -> int:
     config = Config.load()
     logging.basicConfig(level=config.log_level,
                         format="%(asctime)s %(levelname)s %(threadName)s %(name)s: %(message)s")
-    in_memory = args.command == "poll-once" and args.no_store
+    # site-data builds its history from scratch and never touches the local database.
+    in_memory = (args.command == "poll-once" and args.no_store) or args.command == "site-data"
     storage = Storage(":memory:" if in_memory else config.db_path)
     try:
         return COMMANDS[args.command](args, config, storage)
@@ -292,6 +303,17 @@ def cmd_import_snapshots(args, config: Config, storage: Storage) -> int:
     return 0
 
 
+def cmd_site_data(args, config: Config, storage: Storage) -> int:
+    """`storage` is the throwaway in-memory database `main` opens for this command."""
+    builder = SiteDataBuilder(HttpEcoboxApi(config.http_timeout_s), storage, SystemClock(),
+                              config.scope_terms, config.poll_interval_s, config.gap_threshold_s)
+    data = builder.build(Path(args.snapshots), args.snapshot_base_url)
+    size = site_data.write(data, Path(args.out))
+    print(f"{args.out}: {size} bayt · {len(data['sockets'])} priz · "
+          f"{data['coverage']['polls']} okuma · son görüntü {data['newest_snapshot']}")
+    return 0
+
+
 COMMANDS = {
     "run": cmd_run,
     "poll-once": cmd_poll_once,
@@ -301,6 +323,7 @@ COMMANDS = {
     "insights": cmd_insights,
     "charts": cmd_charts,
     "import-snapshots": cmd_import_snapshots,
+    "site-data": cmd_site_data,
 }
 
 

@@ -25,6 +25,7 @@ concurrency:
 env:
   LOOP_SECONDS: ${{ inputs.loop_seconds }}
   POLL_SECONDS: 180
+  SITE_EVERY_ROUNDS: 20
 
 jobs:
   snapshot:
@@ -42,11 +43,21 @@ jobs:
         with:
           python-version: "3.14"
       - name: Poll and push until the time budget is used
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git -C data config user.name "github-actions[bot]"
           git -C data config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          round=0
           while [ "$SECONDS" -lt "$LOOP_SECONDS" ]; do
             started=$SECONDS
+            # The page's statistics are rebuilt about once an hour; a failed dispatch costs
+            # one rebuild and never the poll.
+            round=$(( round + 1 ))
+            if [ $(( round % SITE_EVERY_ROUNDS )) -eq 0 ]; then
+              gh workflow run site.yml --repo "$GITHUB_REPOSITORY" --ref main \
+                || echo "::warning::site rebuild was not started"
+            fi
             # A failed poll or push costs one sample; the next round carries on.
             if (cd code && python -m ecobox.snapshot ../data/snapshots); then
               git -C data add snapshots

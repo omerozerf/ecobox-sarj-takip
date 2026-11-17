@@ -234,6 +234,33 @@ günün gün × saat grafiği açık olan her bota kendiliğinden gider. Mac o a
 uyanınca gönderilir; haftada bir kereden fazla gitmez (gönderilen hafta `service_state`'te
 tutulur). Toplam kayıt `DIGEST_MIN_DAYS` günden azsa gönderilmez. `DIGEST_WEEKDAY=0` kapatır.
 
+## Web sitesi
+
+Herkese açık sayfa: https://omerozerf.github.io/ecobox-sarj-takip/
+
+`site/` altındaki statik dosyalar (derleme adımı, çerçeve ya da dış kaynak yok) GitHub Pages'e
+`site` iş akışıyla yayınlanır. İki veri kaynağı vardır:
+
+- **İstatistikler** tek bir `data.json`'dan gelir. `python -m ecobox site-data` onu `data`
+  dalındaki görüntülerden ve Ecobox'ın istasyon listesinden üretir; `.env` ve veritabanı
+  gerekmez. Sayılar botla aynı koddan (`Statistics`, `InsightEngine`) çıkar, sayfa hiçbirini
+  kendi hesaplamaz. Dosyanın biçimi `ecobox/site_data.py` başındadır.
+- **Canlı durum** tarayıcıda doğrudan `data` dalındaki günün dosyasından okunur ve üç dakikada
+  bir yenilenir. GitHub'ın önbelleği yüzünden birkaç dakika gecikebilir; sayfa okumanın yaşını
+  gösterir ve 15 dakikadan eskiyse "son bilinen durum" der.
+
+`site` iş akışı `main`'e her push'ta ve elle (`gh workflow run site.yml`) çalışır; ayrıca
+`collect` döngüsü onu yaklaşık saatte bir tetikler (toplayıcının push'ları iş akışı
+başlatmaz). Yerelde denemek için:
+
+```bash
+git archive origin/data snapshots | tar -x -C /tmp/ecobox-site
+cp -R site/. /tmp/ecobox-site/
+python -m ecobox site-data --snapshots /tmp/ecobox-site/snapshots --out /tmp/ecobox-site/data.json \
+  --snapshot-base-url https://raw.githubusercontent.com/omerozerf/ecobox-sarj-takip/data/snapshots
+python3 -m http.server --directory /tmp/ecobox-site 8000
+```
+
 ## Veriler nerede
 
 `data/ecobox.sqlite3` (git'e girmez). Tüm zamanlar UTC saklanır; saat/gün istatistikleri
