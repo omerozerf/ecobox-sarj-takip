@@ -1,12 +1,13 @@
-// "Şu an": the big answer and one tile per socket, built once from data.json so nothing
-// moves when the live reading arrives.
+// "Şu an": the big answer, the free sockets named right under it, and one tile per socket
+// grouped by location. Groups and tiles are built once from data.json; a live reading only
+// repaints them, reorders the groups (most free first) and folds the ones with nothing free.
 
 import { empty, h, icon, put } from './dom.js';
 import { ago, clock, decimal, minutes, price, titled } from './format.js';
 
 export const STALE_MS = 15 * 60_000;
 const collator = new Intl.Collator('tr', { numeric: true });
-const ICON_BY_STATE = { available: 'free', charging: 'busy', unknown: 'unknown' };
+const PROBLEM_STATES = new Set(['faulted', 'offline', 'maintenance', 'unavailable']);
 
 /** Tiles grouped by location word: the broadest word a socket has; DC sockets apart. */
 export function socketGroups(sockets) {
@@ -35,57 +36,75 @@ export function socketGroups(sockets) {
     .sort((a, b) => rank(a) - rank(b) || collator.compare(a.label, b.label));
 }
 
+/** Groups by free sockets, most first; ties keep their order; DC stays last. */
+export function orderByFree(groups, freeOf) {
+  return groups
+    .map((g, index) => ({ g, index }))
+    .sort((a, b) => (a.g.key === 'dc') - (b.g.key === 'dc') || freeOf(b.g) - freeOf(a.g) || a.index - b.index)
+    .map(({ g }) => g);
+}
+
 /** "22 kW · 9,29 TL/kWh"; each part kept on one line. */
 function socketMeta(socket) {
   return [socket.power_kw ? `${decimal(socket.power_kw)} kW` : null, price(socket.price)]
-    .filter(Boolean).map((part) => part.replaceAll(' ', '\u00a0')).join(' · ') || 'güç ve fiyat bilinmiyor';
+    .filter(Boolean).map((part) => part.replaceAll(' ', ' ')).join(' · ') || 'güç ve fiyat bilinmiyor';
 }
+
+const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 export class LiveView {
   constructor(root, data) {
     this.data = data;
-    this.labels = { ...data.state_labels, charging: 'dolu', unknown: 'bilinmiyor' };
+    this.labels = { ...data.state_labels, charging: 'dolu', unknown: 'bilinmiyor', none: 'ölçüm yok', loading: 'yükleniyor' };
     this.result = null;
     this.failed = false;
     this.el = {
       eyebrow: root.querySelector('[data-live=eyebrow]'),
       big: root.querySelector('[data-live=big]'),
+      free: root.querySelector('[data-live=free]'),
       sub: root.querySelector('[data-live=sub]'),
       age: root.querySelector('[data-live=age]'),
       banner: root.querySelector('[data-live=banner]'),
-      tiles: root.querySelector('[data-live=tiles]'),
+      groups: root.querySelector('[data-live=tiles]'),
     };
     this.tiles = new Map();
-    this.buildTiles();
+    this.groups = socketGroups(data.sockets).map((g, i) => this.buildGroup(g, i));
+    if (this.groups.length) put(this.el.groups, this.groups.map((g) => g.node));
+    else put(this.el.groups, empty('Bu kapsamda priz yok.'));
   }
 
-  buildTiles() {
-    const groups = socketGroups(this.data.sockets);
-    if (!groups.length) {
-      put(this.el.tiles, empty('Bu kapsamda priz yok.'));
-      return;
-    }
-    put(this.el.tiles, groups.map((group) => {
-      const count = h('span', { class: 'group-count' });
-      const metas = new Set(group.sockets.map(socketMeta));
-      const shared = metas.size === 1 ? [...metas][0] : null; // said once under the heading
-      const list = h('ul', { class: 'tiles' }, group.sockets.map((s) => this.tile(s, shared == null)));
-      this.groupCounts ??= [];
-      this.groupCounts.push({ count, sockets: group.sockets });
-      return h('section', { class: 'group', 'aria-label': group.label },
-        h('h3', { class: 'group-title' }, h('span', { text: group.label }), count),
-        shared ? h('p', { class: 'group-meta', text: shared }) : null, list);
-    }));
+  buildGroup(group, index) {
+    const metas = new Set(group.sockets.map(socketMeta));
+    const shared = metas.size === 1 ? [...metas][0] : null; // said once for the whole group
+    const summary = h('span', { class: 'group-summary' });
+    const bodyId = `group-${index}`;
+    const toggle = h('button', { type: 'button', class: 'group-head', 'aria-expanded': 'true', 'aria-controls': bodyId },
+      h('span', { class: 'group-name', text: group.label }), summary, icon('chevron'));
+    const body = h('div', { class: 'group-body', id: bodyId },
+      shared ? h('p', { class: 'group-meta', text: shared }) : null,
+      h('ul', { class: 'tiles' }, group.sockets.map((s) => this.tile(s, shared == null))));
+    const node = h('section', { class: 'group', 'aria-label': group.label, 'data-open': 'yes' }, toggle, body);
+    const entry = { ...group, node, toggle, body, summary, touched: false };
+    toggle.addEventListener('click', () => {
+      entry.touched = true;
+      this.setOpen(entry, toggle.getAttribute('aria-expanded') !== 'true');
+    });
+    return entry;
+  }
+
+  setOpen(group, open) {
+    group.toggle.setAttribute('aria-expanded', String(open));
+    group.body.hidden = !open;
+    group.node.dataset.open = open ? 'yes' : 'no';
   }
 
   tile(socket, withMeta) {
-    const chip = h('span', { class: 'chip' });
-    const since = h('span', { class: 'tile-since' });
-    const node = h('li', { class: 'tile', 'data-state': 'loading' },
-      h('div', { class: 'tile-top' }, h('span', { class: 'tile-name', text: socket.name }), chip),
-      h('div', { class: 'tile-meta', text: withMeta ? socketMeta(socket) : '' }),
-      since);
-    this.tiles.set(socket.id, { node, chip, since });
+    const state = h('span', { class: 'tile-state' });
+    const node = h('li', { class: 'tile', 'data-state': 'loading', id: `tile-${socket.id}`, tabindex: '-1' },
+      h('span', { class: 'tile-name', text: socket.name }),
+      state,
+      withMeta ? h('span', { class: 'tile-meta', text: socketMeta(socket) }) : null);
+    this.tiles.set(socket.id, { node, state });
     this.paintTile(socket.id, undefined);
     return node;
   }
@@ -99,20 +118,19 @@ export class LiveView {
     const tile = this.tiles.get(id);
     const state = entry === undefined ? 'loading' : entry.state ?? 'none';
     tile.node.dataset.state = state;
-    const label = state === 'loading' ? 'yükleniyor' : state === 'none' ? 'okuma yok' : this.labels[state] ?? state;
-    tile.chip.replaceChildren(icon(ICON_BY_STATE[state] ?? (state === 'none' || state === 'loading' ? 'unknown' : 'warn')),
-      document.createTextNode(label));
-    let since = ' ';
+    let text = this.labels[state] ?? state;
     if (entry?.since) {
       const span = minutes(Math.max(60_000, until - entry.since.start) / 60_000);
-      since = entry.since.exact && !stale ? `${span} süredir` : `en az ${span} süredir`;
+      text += entry.since.exact && !stale ? ` · ${span}` : ` · en az ${span}`;
     }
-    tile.since.textContent = since;
+    const name = state === 'available' ? 'free' : state === 'charging' ? 'busy'
+      : PROBLEM_STATES.has(state) ? 'warn' : state === 'loading' ? null : 'unknown';
+    tile.state.replaceChildren(...[name ? icon(name) : null, document.createTextNode(text)].filter(Boolean));
   }
 
   loading() {
     this.setText(this.el.eyebrow, 'Şu an');
-    this.setText(this.el.big, 'Okunuyor…');
+    this.setText(this.el.big, 'Yükleniyor…');
   }
 
   show(result, now = Date.now()) {
@@ -128,15 +146,21 @@ export class LiveView {
     this.render(now);
   }
 
+  stateOf(socket) {
+    return this.result?.states.get(socket.id)?.state;
+  }
+
   /** Re-renders the answer; cheap, also called every 30 s so the age and staleness move. */
   render(now = Date.now()) {
     const { result } = this;
     if (!result) {
       this.setText(this.el.eyebrow, 'Şu an');
-      this.setText(this.el.big, this.failed ? 'Canlı durum alınamadı' : 'Henüz okuma yok');
+      this.setText(this.el.big, this.failed ? 'Canlı durum alınamadı' : 'Henüz ölçüm yok');
+      this.el.big.dataset.free = 'unknown';
+      this.setText(this.el.free, '');
       this.setText(this.el.sub, this.failed
         ? 'Bağlantı ya da veri kaynağı yanıt vermedi. Aşağıdaki istatistikler yine geçerli.'
-        : 'Bugün ve dün için kayıtlı okuma bulunamadı.');
+        : 'Bugün ve dün için kayıtlı ölçüm bulunamadı.');
       this.setText(this.el.age, '');
       this.banner(this.failed ? 'error' : null);
       return;
@@ -145,32 +169,85 @@ export class LiveView {
     const stale = age > STALE_MS;
     const ac = this.data.sockets.filter((s) => s.kind === 'AC');
     const dc = this.data.sockets.filter((s) => s.kind === 'DC');
-    const stateOf = (s) => result.states.get(s.id)?.state;
-    const free = ac.filter((s) => stateOf(s) === 'available').length;
-    const missing = ac.filter((s) => stateOf(s) == null).length;
+    const free = ac.filter((s) => this.stateOf(s) === 'available');
+    const missing = ac.filter((s) => this.stateOf(s) == null).length;
+
     this.setText(this.el.eyebrow, stale ? 'Son bilinen durum' : 'Şu an · AC prizler');
-    const verb = stale ? (free ? 'priz boştu' : 'Boş priz yoktu') : (free ? 'priz boş' : 'Boş priz yok');
-    if (free) {
-      this.el.big.replaceChildren(h('span', { class: 'num', text: String(free) }), ` ${verb}`);
-    } else {
-      this.setText(this.el.big, verb);
-    }
-    this.el.big.dataset.free = free ? 'yes' : 'no';
+    const verb = stale ? (free.length ? 'priz boştu' : 'Boş priz yoktu') : (free.length ? 'priz boş' : 'Boş priz yok');
+    if (free.length) this.el.big.replaceChildren(h('span', { class: 'num', text: String(free.length) }), ` ${verb}`);
+    else this.setText(this.el.big, verb);
+    this.el.big.dataset.free = free.length ? 'yes' : 'no';
+
+    const ordered = orderByFree(this.groups, (g) => g.sockets.filter((s) => this.stateOf(s) === 'available').length);
+    this.renderFreeLine(free, ordered, ac, stale);
     const parts = [`${ac.length} AC prizden`];
-    if (missing) parts.push(`${missing} prizde okuma yok`);
-    if (dc.length) parts.push(`DC: ${dc.filter((s) => stateOf(s) === 'available').length}/${dc.length} boş`);
+    if (missing) parts.push(`${missing} prizde ölçüm yok`);
+    if (dc.length) parts.push(`DC: ${dc.filter((s) => this.stateOf(s) === 'available').length}/${dc.length} boş`);
     this.setText(this.el.sub, parts.join(' · '));
-    this.setText(this.el.age, `Son okuma ${clock(result.at)} · ${ago(age)}`);
+    this.setText(this.el.age, `Son ölçüm ${clock(result.at)} · ${ago(age)}`);
     this.el.age.dataset.stale = stale ? 'yes' : 'no';
     this.banner(stale ? 'stale' : this.failed ? 'retry' : null, age);
+
     for (const s of this.data.sockets) {
       const entry = result.states.get(s.id);
       if (entry?.since) this.paintTile(s.id, entry, stale ? result.at : now, stale);
     }
-    for (const { count, sockets } of this.groupCounts ?? []) {
-      const known = sockets.filter((s) => stateOf(s) != null);
-      count.textContent = known.length ? `${sockets.filter((s) => stateOf(s) === 'available').length}/${sockets.length} boş` : '';
+    this.renderGroups(ordered);
+  }
+
+  renderFreeLine(free, ordered, ac, stale) {
+    if (!free.length) {
+      const allBusy = ac.length > 0 && ac.every((s) => this.stateOf(s) === 'charging');
+      const text = stale ? 'Son ölçümde boş AC priz yoktu.'
+        : allBusy ? 'Şu an bütün AC prizler dolu.' : 'Şu an boş AC priz yok.';
+      this.setText(this.el.free, text);
+      this.el.free.dataset.kind = 'none';
+      return;
     }
+    const key = `${free.map((s) => s.id).join()}|${stale}|${ordered.map((g) => g.key).join()}`;
+    if (this.el.free.dataset.key === key) return; // unchanged: keep focus and the live region quiet
+    const rank = new Map(ordered.flatMap((g, gi) => g.sockets.map((s, si) => [s.id, gi * 1000 + si])));
+    const chips = [...free].sort((a, b) => rank.get(a.id) - rank.get(b.id)).map((s) => h('button', {
+      type: 'button', class: 'free-chip', onclick: () => this.reveal(s.id),
+    }, icon('free'), s.name));
+    this.el.free.replaceChildren(h('span', { class: 'free-label', text: stale ? 'Son ölçümde boş:' : 'Boş:' }), ...chips);
+    this.el.free.dataset.key = key;
+    this.el.free.dataset.kind = 'some';
+  }
+
+  renderGroups(ordered) {
+    const current = [...this.el.groups.children];
+    if (ordered.some((g, i) => current[i] !== g.node)) this.el.groups.append(...ordered.map((g) => g.node));
+    for (const g of ordered) {
+      const states = g.sockets.map((s) => this.stateOf(s));
+      const free = states.filter((s) => s === 'available').length;
+      g.summary.textContent = this.summary(states, free);
+      g.node.dataset.free = free ? 'yes' : 'no';
+      if (!g.touched) this.setOpen(g, free > 0);
+    }
+  }
+
+  /** "2/4 boş" while one is free; otherwise what the sockets are: "4/4 dolu", "3 dolu · 1 arızalı". */
+  summary(states, free) {
+    const n = states.length;
+    if (free) return `${free}/${n} boş`;
+    const counts = new Map();
+    for (const s of states) {
+      const label = this.labels[s ?? 'none'] ?? s;
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    if (counts.size === 1) return `${n}/${n} ${[...counts.keys()][0]}`;
+    return [...counts].map(([label, count]) => `${count} ${label}`).join(' · ');
+  }
+
+  /** A free chip's target: open its group, bring the tile into view and focus it. */
+  reveal(id) {
+    const group = this.groups.find((g) => g.sockets.some((s) => s.id === id));
+    group.touched = true;
+    this.setOpen(group, true);
+    const tile = this.tiles.get(id).node;
+    tile.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
+    tile.focus({ preventScroll: true });
   }
 
   banner(kind, age = 0) {
@@ -181,16 +258,18 @@ export class LiveView {
     }
     el.hidden = false;
     el.dataset.kind = kind;
-    const retry = h('button', { type: 'button', class: 'link-button', text: 'Tekrar dene', onclick: () => this.onRetry?.() });
     const text = {
-      stale: `Bu okuma ${ago(age)} yapıldı; şu anki durum farklı olabilir. Kayıt bir süredir gelmiyor.`,
-      retry: 'Son yenileme başarısız oldu; gösterilen durum bir önceki okuma.',
+      stale: `Bu ölçüm ${ago(age)} yapıldı; şu anki durum farklı olabilir. Kayıt bir süredir gelmiyor.`,
+      retry: 'Son yenileme başarısız oldu; gösterilen durum bir önceki ölçüm.',
       error: 'Canlı durum şu an okunamıyor.',
     }[kind];
-    el.replaceChildren(...[icon('warn'), h('span', { text }), kind === 'stale' ? null : retry].filter(Boolean));
+    const retry = kind === 'stale' ? null
+      : h('button', { type: 'button', class: 'link-button', text: 'Tekrar dene', onclick: () => this.onRetry?.() });
+    el.replaceChildren(...[icon('warn'), h('span', { text }), retry].filter(Boolean));
   }
 
   setText(el, text) {
     if (el.textContent !== text) el.textContent = text;
+    delete el.dataset.key;
   }
 }

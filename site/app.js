@@ -4,7 +4,9 @@ import { empty, put } from './dom.js';
 import { renderHeatmap } from './heatmap.js';
 import { LiveFeed } from './live.js';
 import { LiveView } from './live-view.js';
-import { renderFindings, renderFooter, renderRanking, renderSites, renderStay } from './sections.js';
+import {
+  findingsBySection, renderFindingSlots, renderFooter, renderOtherFindings, renderRanking, renderSites, renderStay,
+} from './sections.js';
 
 const REFRESH_MS = 3 * 60_000;
 const RETURN_REFRESH_MS = 60_000;
@@ -19,12 +21,13 @@ async function loadData() {
 }
 
 function renderHistory(data) {
+  const findings = findingsBySection(data.findings);
   const sections = [
-    ['#ne-zaman', (el) => renderHeatmap(el, data)],
-    ['[data-section=findings]', (el) => renderFindings(el, data)],
-    ['[data-section=ranking]', (el) => renderRanking(el, data)],
-    ['[data-section=stay]', (el) => renderStay(el, data)],
-    ['[data-section=sites]', (el) => renderSites(el, data)],
+    ['#ne-zaman', (el) => { renderHeatmap(el, data); renderFindingSlots(el, findings.when); }],
+    ['#prizler', (el) => { renderRanking(el.querySelector('[data-section=ranking]'), data); renderFindingSlots(el, findings.sockets); }],
+    ['#sure', (el) => { renderStay(el.querySelector('[data-section=stay]'), data, findings.stay); renderFindingSlots(el, findings.stay); }],
+    ['#siteler', (el) => { renderSites(el.querySelector('[data-section=sites]'), data); renderFindingSlots(el, findings.sites); }],
+    ['#notlar', (el) => renderOtherFindings(el, findings.other, data.missing)],
     ['[data-section=footer]', (el) => renderFooter(el, data)],
   ];
   for (const [selector, render] of sections) {

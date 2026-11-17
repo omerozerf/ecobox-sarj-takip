@@ -35,6 +35,7 @@ const ICONS = {
   busy: 'M11 1.5L4 11h5l-1 7.5 7.5-10H10.5l.5-7z',
   warn: 'M10 2.5l8 14.5H2L10 2.5zM10 8v4M10 14.6v.1',
   unknown: 'M7.5 7.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .9-1 1.6v.6M10 15v.1',
+  chevron: 'M5.5 8l4.5 4.5L14.5 8',
 };
 
 /** A small stroke icon; decorative (the label next to it carries the meaning). */

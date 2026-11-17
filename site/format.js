@@ -60,3 +60,16 @@ export function price(p) {
   const currency = p.currency === 'TRY' ? 'TL' : p.currency;
   return `${decimal(p.energy, 2)} ${currency}/kWh`;
 }
+
+// Third-person possessive after a number read aloud, as `ecobox/fmt.py` picks it:
+// 40 -> "'ı", 45 -> "'i", 100 -> "'ü".
+const POSSESSIVE_BY_UNIT = { 1: 'i', 2: 'si', 3: 'ü', 4: 'ü', 5: 'i', 6: 'sı', 7: 'si', 8: 'i', 9: 'u' };
+const POSSESSIVE_BY_TENS = { 1: 'u', 2: 'si', 3: 'u', 4: 'ı', 5: 'si', 6: 'ı', 7: 'i', 8: 'i', 9: 'ı' };
+
+export function possessive(n) {
+  if (n === 0) return "'ı";
+  if (n % 1000 === 0) return "'i";
+  if (n % 100 === 0) return "'ü";
+  if (n % 10) return `'${POSSESSIVE_BY_UNIT[n % 10]}`;
+  return `'${POSSESSIVE_BY_TENS[Math.floor((n % 100) / 10)]}`;
+}

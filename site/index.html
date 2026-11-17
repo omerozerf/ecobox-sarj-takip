@@ -15,17 +15,19 @@
 <body>
   <a class="skip" href="#simdi">İçeriğe geç</a>
   <header class="site-header">
-    <div class="wrap">
-      <p class="kicker">Hacettepe Teknokent · Ecobox</p>
-      <h1>Şarj prizleri</h1>
+    <div class="wrap brand">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect width="32" height="32" rx="9"/><path d="M18 4 8 18h7l-2 10 11-15h-7l1-9z"/></svg>
+      <div>
+        <p class="kicker">Hacettepe Teknokent · Ecobox</p>
+        <h1>Şarj prizleri</h1>
+      </div>
     </div>
   </header>
 
   <nav class="chips" aria-label="Bölümler">
-    <div class="wrap">
+    <div class="wrap chips-row">
       <a href="#simdi">Şu an</a>
       <a href="#ne-zaman">Ne zaman boş</a>
-      <a href="#bulgular">Bulgular</a>
       <a href="#prizler">Prizler</a>
       <a href="#sure">Kalış süresi</a>
       <a href="#siteler">Diğer siteler</a>
@@ -37,47 +39,66 @@
       <h2 id="simdi-title" class="visually-hidden">Şu an</h2>
       <div class="answer">
         <p class="eyebrow" data-live="eyebrow">Şu an</p>
-        <div aria-live="polite" aria-atomic="true">
-          <p class="big" data-live="big">Okunuyor…</p>
-          <p class="sub" data-live="sub">&nbsp;</p>
+        <div aria-live="polite">
+          <p class="big" data-live="big">Yükleniyor…</p>
+          <p class="free-line" data-live="free">&nbsp;</p>
         </div>
+        <p class="sub" data-live="sub">&nbsp;</p>
         <p class="age" data-live="age">&nbsp;</p>
       </div>
       <div class="banner" data-live="banner" role="status" hidden></div>
       <div class="groups" data-live="tiles" aria-busy="true">
-        <div class="skeleton" style="height: 26rem"></div>
+        <div class="skeleton" style="height: 22rem"></div>
       </div>
     </section>
 
     <section id="ne-zaman" class="card" aria-labelledby="ne-zaman-title">
       <h2 id="ne-zaman-title">Ne zaman boş olur?</h2>
-      <p class="intro">Her kare: o gün ve saatte en az bir AC prizin boş bulunduğu okumaların payı. Renk ne kadar dolgunsa boş bulma şansı o kadar yüksek. Ayrıntı için bir kareye dokun.</p>
-      <div class="hm" data-hm="map" aria-busy="true"><div class="skeleton" style="height: 18rem"></div></div>
+      <h3 class="first" data-hm="today-title">Bugün</h3>
+      <p class="quiet" data-hm="today-note" hidden></p>
+      <div class="today-wrap" data-hm="today" aria-busy="true"><div class="skeleton" style="height: 6rem"></div></div>
+      <h3>Gün ve saate göre</h3>
+      <p class="intro">Her kare: o gün ve saatte en az bir AC prizin boş bulunduğu ölçümlerin payı. Soluk kare: boş bulmak zor. Dolgun kare: kolay. Ayrıntı için bir kareye dokun.</p>
+      <p class="badge" data-hm="badge" hidden></p>
+      <div class="hm-tools"><button type="button" class="toggle" data-hm="all-hours" aria-pressed="false" hidden>Tüm saatler</button></div>
+      <div class="hm" data-hm="map" aria-busy="true"><div class="skeleton" style="height: 26rem"></div></div>
       <p class="readout" data-hm="readout" aria-live="polite">&nbsp;</p>
       <ul class="legend" data-hm="legend" aria-label="Renk açıklaması"></ul>
       <h3>Saat saat, günler birlikte</h3>
       <div class="strips" data-hm="strips" aria-busy="true"><div class="skeleton" style="height: 4.5rem"></div></div>
-    </section>
-
-    <section id="bulgular" class="card" aria-labelledby="bulgular-title">
-      <h2 id="bulgular-title">Kayıtlar ne diyor?</h2>
-      <div data-section="findings" aria-busy="true"><div class="skeleton" style="height: 20rem"></div></div>
+      <div data-findings="rest"></div>
     </section>
 
     <section id="prizler" class="card" aria-labelledby="prizler-title">
       <h2 id="prizler-title">Hangi priz daha sık boş?</h2>
-      <p class="intro">Her prizin kayıtlı zamanın ne kadarında boş olduğu.</p>
+      <div data-findings="lead"></div>
+      <p class="caption">Gün boyu ortalama, gece dahil</p>
       <div data-section="ranking" aria-busy="true"><div class="skeleton" style="height: 24rem"></div></div>
+      <div data-findings="rest"></div>
     </section>
 
     <section id="sure" class="card" aria-labelledby="sure-title">
       <h2 id="sure-title">Araçlar ne kadar kalıyor?</h2>
+      <div data-findings="lead"></div>
       <div data-section="stay" aria-busy="true"><div class="skeleton" style="height: 18rem"></div></div>
+      <div data-findings="rest"></div>
     </section>
 
     <section id="siteler" class="card" aria-labelledby="siteler-title">
       <h2 id="siteler-title">Diğer Ecobox siteleriyle karşılaştırma</h2>
-      <div data-section="sites" aria-busy="true"><div class="skeleton" style="height: 22rem"></div></div>
+      <div data-findings="lead"></div>
+      <div data-section="sites" aria-busy="true"><div class="skeleton" style="height: 10rem"></div></div>
+    </section>
+
+    <section id="notlar" class="card card-quiet" aria-label="Diğer notlar" hidden>
+      <div data-part="other" hidden>
+        <h2>Diğer bulgular</h2>
+        <div data-section="other"></div>
+      </div>
+      <div data-part="missing" hidden>
+        <h2 class="h-quiet">Henüz yeterli veri yok</h2>
+        <div data-section="missing"></div>
+      </div>
     </section>
   </main>
 

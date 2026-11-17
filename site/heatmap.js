@@ -1,105 +1,170 @@
-// "Ne zaman boş olur": the weekday × hour map and the pooled weekday/weekend strips.
-// Weekdays are rows on a wide card; below ~520 px the CSS turns hours into rows instead
-// (same buttons, placed by --d/--h), so the whole week fits a phone without scrolling.
+// "Ne zaman boş olur": today's hours with their values written out, the weekday × hour map
+// (office hours by default, every hour on request) and the pooled weekday/weekend strips.
+// On a wide card weekdays are rows; below ~520 px the CSS turns hours into rows instead (same
+// buttons, placed by --d/--c), so the week fits a phone without scrolling sideways.
 
 import { h, put, roving } from './dom.js';
-import { hourLabel, int, localSlot, pct } from './format.js';
+import { decimal, hourLabel, int, localSlot, pct } from './format.js';
 
 const BINS = ['%0–20', '%20–40', '%40–60', '%60–80', '%80–100'];
+const DAY_HOURS = { first: 7, last: 20 };
+const SETTLED_DATES = 14;
 const bin = (p) => Math.min(4, Math.floor(p * 5));
+const range = (first, last) => Array.from({ length: last - first + 1 }, (_, i) => first + i);
 
-function describe(where, cell, minPolls) {
-  if (!cell) return `${where} · kayıt yok`;
-  const thin = cell.polls < minPolls ? ' · az okuma, kesin değil' : '';
-  return `${where} · ${pct(cell.p)} · ${int(cell.polls)} okuma, ${cell.days} gün${thin}`;
-}
-
-function cellButton(cell, label, minPolls, vars) {
-  const classes = ['hm-cell'];
-  if (!cell) classes.push('is-empty');
-  else {
-    classes.push(`b${bin(cell.p)}`);
-    if (cell.polls < minPolls) classes.push('is-thin');
-  }
-  return h('button', { type: 'button', class: classes.join(' '), 'aria-label': label, vars });
+/**
+ * Shared by every cell: what counts as early (thin) data, how a cell is told, and whether it
+ * carries the early-data dot. A cell is early with too few polls or too few dates. While at
+ * least half of the map is early by dates, the day-based dots are left out (the badge says it
+ * once for the whole map); a cell with too few polls keeps its dot in every case.
+ */
+export function cellModel(data) {
+  const minPolls = data.thresholds.min_hour_polls;
+  const minDates = data.thresholds.min_pattern_dates;
+  const filled = data.heatmap.cells.flat().filter(Boolean);
+  const youngMap = filled.length > 0 && filled.filter((c) => c.days < minDates).length * 2 >= filled.length;
+  const early = (cell) => cell != null && (cell.polls < minPolls || cell.days < minDates);
+  const dotted = (cell) => cell != null && (cell.polls < minPolls || (!youngMap && cell.days < minDates));
+  const describe = (where, cell) => {
+    if (!cell) return `${where} · kayıt yok`;
+    return `${where} · ${pct(cell.p)} · ${int(cell.polls)} ölçüm, ${cell.days} gün${early(cell) ? ' · erken veri' : ''}`;
+  };
+  const classes = (cell) => (cell ? [`b${bin(cell.p)}`, dotted(cell) ? 'is-early' : ''] : ['is-empty']).filter(Boolean);
+  const anyDot = filled.some(dotted) || [...data.heatmap.weekday_hours, ...data.heatmap.weekend_hours].some(dotted);
+  return { early, describe, classes, minPolls, minDates, youngMap, anyDot };
 }
 
 export function renderHeatmap(root, data, now = Date.now()) {
-  const { cells, weekday_hours: weekdayHours, weekend_hours: weekendHours } = data.heatmap;
-  const minPolls = data.thresholds.min_hour_polls;
-  const days = data.weekday_labels;
+  const model = cellModel(data);
   const slot = localSlot(now);
   const readout = root.querySelector('[data-hm=readout]');
   const say = (text) => { readout.textContent = text; };
+  const clearPicked = () => root.querySelectorAll('.is-picked').forEach((b) => b.classList.remove('is-picked'));
 
-  // ----- the map -----
-  const grid = h('div', { class: 'hm-grid', role: 'group', 'aria-label': 'Gün ve saate göre boş priz şansı' });
+  renderToday(root, data, model, slot);
+  renderBadge(root, data);
+
+  // ----- the map, office hours or all of them -----
+  const toggle = root.querySelector('[data-hm=all-hours]');
+  let all = false;
+  const drawMap = () => {
+    const hours = all ? range(0, 23) : range(DAY_HOURS.first, DAY_HOURS.last);
+    put(root.querySelector('[data-hm=map]'), mapGrid(data, model, slot, hours, say, clearPicked));
+    toggle.setAttribute('aria-pressed', String(all));
+  };
+  toggle.hidden = false;
+  toggle.addEventListener('click', () => { all = !all; drawMap(); });
+  drawMap();
+  const nowCell = data.heatmap.cells[slot.weekday][slot.hour];
+  say(`Şu an: ${model.describe(`${data.weekday_labels[slot.weekday]} ${hourLabel(slot.hour)}`, nowCell)}`);
+
+  // ----- the pooled strips -----
+  const strips = [['Hafta içi', data.heatmap.weekday_hours], ['Hafta sonu', data.heatmap.weekend_hours]].map(([name, row]) => {
+    const isNowRow = (slot.weekday < 5) === (name === 'Hafta içi');
+    const buttons = row.map((cell, hour) => {
+      const button = h('button', { type: 'button', class: ['hm-cell', ...model.classes(cell)].join(' '), 'aria-label': model.describe(`${name} ${hourLabel(hour)}`, cell) });
+      if (isNowRow && hour === slot.hour) button.classList.add('is-now');
+      return button;
+    });
+    roving(buttons, isNowRow ? slot.hour : 0,
+      (i, key) => ({ ArrowLeft: Math.max(0, i - 1), ArrowRight: Math.min(23, i + 1), Home: 0, End: 23 })[key],
+      (i) => { clearPicked(); buttons[i].classList.add('is-picked'); say(buttons[i].getAttribute('aria-label')); });
+    return h('div', { class: 'strip-row' },
+      h('span', { class: 'strip-name', text: name }),
+      h('div', { class: 'strip', role: 'group', 'aria-label': `${name}, saat saat` }, buttons));
+  });
+  put(root.querySelector('[data-hm=strips]'), strips,
+    h('div', { class: 'strip-axis', 'aria-hidden': 'true' }, ['00', '06', '12', '18', '24'].map((t) => h('span', { text: t }))));
+
+  put(root.querySelector('[data-hm=legend]'),
+    BINS.map((text, i) => h('li', {}, h('span', { class: `swatch b${i}` }), text)),
+    !model.anyDot ? null : h('li', {}, h('span', { class: 'swatch b3 is-early' }), model.youngMap
+      ? `az ölçüm (${model.minPolls} ölçümden az)`
+      : `erken veri (${model.minDates} günden ya da ${model.minPolls} ölçümden az)`),
+    h('li', {}, h('span', { class: 'swatch is-empty' }), 'kayıt yok'));
+}
+
+function mapGrid(data, model, slot, hours, say, clearPicked) {
+  const days = data.weekday_labels;
+  const grid = h('div', { class: 'hm-grid', role: 'group', 'aria-label': 'Gün ve saate göre boş priz şansı', vars: { '--cols': hours.length } });
+  const step = hours.length > 14 ? 3 : 1;
+  days.forEach((label, d) => grid.append(h('span', { class: `hm-day${d === slot.weekday ? ' is-now' : ''}`, vars: { '--d': d }, text: label })));
+  hours.forEach((hour, c) => grid.append(h('span', {
+    class: `hm-hour${hour % step === 0 ? ' is-major' : ''}${hour === slot.hour ? ' is-now' : ''}`,
+    vars: { '--c': c }, text: String(hour).padStart(2, '0'),
+  })));
   const buttons = [];
-  for (let d = 0; d < 7; d += 1) {
-    grid.append(h('span', { class: `hm-day${d === slot.weekday ? ' is-now' : ''}`, vars: { '--d': d }, text: days[d] }));
-  }
-  for (let hour = 0; hour < 24; hour += 1) {
-    const major = hour % 3 === 0 ? ' is-major' : '';
-    grid.append(h('span', { class: `hm-hour${major}${hour === slot.hour ? ' is-now' : ''}`, vars: { '--h': hour }, text: String(hour).padStart(2, '0') }));
-  }
   const texts = [];
   for (let d = 0; d < 7; d += 1) {
-    for (let hour = 0; hour < 24; hour += 1) {
-      const cell = cells[d][hour];
-      const text = describe(`${days[d]} ${hourLabel(hour)}`, cell, minPolls);
-      const button = cellButton(cell, text, minPolls, { '--d': d, '--h': hour });
+    hours.forEach((hour, c) => {
+      const cell = data.heatmap.cells[d][hour];
+      const text = model.describe(`${days[d]} ${hourLabel(hour)}`, cell);
+      const button = h('button', { type: 'button', class: ['hm-cell', ...model.classes(cell)].join(' '), 'aria-label': text, vars: { '--d': d, '--c': c } });
       if (d === slot.weekday && hour === slot.hour) button.classList.add('is-now');
       grid.append(button);
       buttons.push(button);
       texts.push(text);
-    }
+    });
   }
-  const nowIndex = slot.weekday * 24 + slot.hour;
-  const clearPicked = () => root.querySelectorAll('.is-picked').forEach((b) => b.classList.remove('is-picked'));
-  roving(buttons, nowIndex, (i, key) => {
+  const n = hours.length;
+  const nowColumn = hours.indexOf(slot.hour);
+  const start = slot.weekday * n + Math.max(0, nowColumn);
+  roving(buttons, start, (i, key) => {
     const tall = getComputedStyle(grid).getPropertyValue('--tall').trim() === '1';
-    const d = Math.floor(i / 24);
-    const hour = i % 24;
-    const step = {
+    const d = Math.floor(i / n);
+    const c = i % n;
+    const move = {
       ArrowLeft: tall ? [-1, 0] : [0, -1], ArrowRight: tall ? [1, 0] : [0, 1],
       ArrowUp: tall ? [0, -1] : [-1, 0], ArrowDown: tall ? [0, 1] : [1, 0],
-      Home: [0, -hour], End: [0, 23 - hour],
+      Home: [0, -c], End: [0, n - 1 - c],
     }[key];
-    if (!step) return null;
-    const nd = d + step[0];
-    const nh = hour + step[1];
-    return nd < 0 || nd > 6 || nh < 0 || nh > 23 ? i : nd * 24 + nh;
+    if (!move) return null;
+    const nd = d + move[0];
+    const nc = c + move[1];
+    return nd < 0 || nd > 6 || nc < 0 || nc >= n ? i : nd * n + nc;
   }, (i) => {
     clearPicked();
     buttons[i].classList.add('is-picked');
-    say((i === nowIndex ? 'Şu an: ' : '') + texts[i]);
+    say(texts[i]);
   });
-  say(`Şu an: ${texts[nowIndex]}`);
+  return grid;
+}
 
-  // ----- the pooled strips -----
-  const strips = [['Hafta içi', weekdayHours], ['Hafta sonu', weekendHours]].map(([name, row]) => {
-    const isNowRow = (slot.weekday < 5) === (name === 'Hafta içi');
-    const stripButtons = row.map((cell, hour) => {
-      const button = cellButton(cell, describe(`${name} ${hourLabel(hour)}`, cell, minPolls), minPolls, null);
-      if (isNowRow && hour === slot.hour) button.classList.add('is-now');
-      return button;
-    });
-    roving(stripButtons, isNowRow ? slot.hour : 0, (i, key) => ({ ArrowLeft: Math.max(0, i - 1), ArrowRight: Math.min(23, i + 1), Home: 0, End: 23 })[key],
-      (i) => {
-        clearPicked();
-        stripButtons[i].classList.add('is-picked');
-        say(stripButtons[i].getAttribute('aria-label'));
-      });
-    return h('div', { class: 'strip-row' },
-      h('span', { class: 'strip-name', text: name }),
-      h('div', { class: 'strip', role: 'group', 'aria-label': `${name}, saat saat` }, stripButtons));
+/** Today's weekday, 07–20, each hour with its value written in; the pooled day kind when
+ *  today has no data at all. */
+function renderToday(root, data, model, slot) {
+  const own = data.heatmap.cells[slot.weekday];
+  const pooled = own.every((c) => c == null);
+  const kind = slot.weekday < 5 ? 'hafta içi' : 'hafta sonu';
+  const row = pooled ? (slot.weekday < 5 ? data.heatmap.weekday_hours : data.heatmap.weekend_hours) : own;
+  root.querySelector('[data-hm=today-title]').textContent = `Bugün (${data.weekday_labels[slot.weekday]})`;
+  const note = root.querySelector('[data-hm=today-note]');
+  note.hidden = !pooled;
+  note.textContent = pooled ? `Bu gün için henüz kayıt yok; bütün ${kind} günleri birlikte gösteriliyor.` : '';
+  const blocks = range(DAY_HOURS.first, DAY_HOURS.last).map((hour) => {
+    const cell = row[hour];
+    const label = model.describe(hourLabel(hour), cell);
+    // No early-data dot here: the values are written out and the badge speaks for the map.
+    const fill = model.classes(cell).filter((c) => c !== 'is-early');
+    const value = cell ? [h('span', { class: 'pct-sign', text: '%' }), pct(cell.p).slice(1)] : ['–'];
+    return h('li', { class: ['today-block', ...fill, hour === slot.hour ? 'is-now' : ''].filter(Boolean).join(' '), 'aria-label': label, title: label },
+      h('span', { class: 'today-hour', 'aria-hidden': 'true', text: String(hour).padStart(2, '0') }),
+      h('span', { class: 'today-value', 'aria-hidden': 'true' }, value));
   });
+  put(root.querySelector('[data-hm=today]'), h('ol', { class: 'today', 'aria-label': 'Bugün saat saat boş priz bulma şansı' }, blocks));
+}
 
-  put(root.querySelector('[data-hm=map]'), grid);
-  put(root.querySelector('[data-hm=strips]'), strips,
-    h('div', { class: 'strip-axis', 'aria-hidden': 'true' }, ['00', '06', '12', '18', '24'].map((t) => h('span', { text: t }))));
-  put(root.querySelector('[data-hm=legend]'),
-    BINS.map((text, i) => h('li', {}, h('span', { class: `swatch b${i}` }), text)),
-    h('li', {}, h('span', { class: 'swatch b3 is-thin' }), `az okuma (<${minPolls})`),
-    h('li', {}, h('span', { class: 'swatch is-empty' }), 'kayıt yok'));
+/** While the record is short: how many days the squares actually rest on. */
+function renderBadge(root, data) {
+  const badge = root.querySelector('[data-hm=badge]');
+  const cells = data.heatmap.cells.flat().filter(Boolean);
+  if (data.coverage.dates >= SETTLED_DATES || !cells.length) {
+    badge.hidden = true;
+    return;
+  }
+  const single = cells.filter((c) => c.days === 1).length;
+  const most = Math.max(...cells.map((c) => c.days));
+  const rest = single * 2 > cells.length ? 'çoğu kare tek bir güne dayanıyor.' : `kareler en çok ${most} güne dayanıyor.`;
+  badge.textContent = `Henüz ${decimal(data.coverage.observed_days)} günlük kayıt: ${rest}`;
+  badge.hidden = false;
 }
