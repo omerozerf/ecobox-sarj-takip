@@ -296,7 +296,7 @@ class DigestComposerTest(unittest.TestCase):
         blocks = reply.text.split("\n\n")
         self.assertEqual(blocks[0], "📬 Haftalık özet · 9–15 Kasım\n"
                                     "Hacettepe · 12 AC priz · 2,8 günlük kayıt")
-        self.assertTrue(blocks[1].startswith("📈 Bu hafta boş priz bulma şansı %100"))
+        self.assertTrue(blocks[1].startswith("📈 Boş priz bulma şansı bu hafta %100"))
         self.assertEqual(len(blocks), 1 + 4)  # at most four findings
         self.assertNotIn("⏳", reply.text)  # "still missing" is not repeated every week
         self.assertEqual([i.filename for i in reply.images], ["bos-priz-isi-haritasi.png"])

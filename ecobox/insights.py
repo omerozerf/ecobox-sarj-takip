@@ -174,9 +174,19 @@ def peak_window(by_hour: list[int], span: int = 2) -> tuple[int, int]:
 
 
 def easy_hard_text(ext: HourExtremes) -> str:
-    """"en kolay 16:00–17:00 (%100), en zor 13:00–14:00 (%20)"."""
-    return (f"en kolay {hour_range(ext.best_hour)} ({percent(ext.best.probability)}), "
-            f"en zor {hour_range(ext.worst_hour)} ({percent(ext.worst.probability)})")
+    """"en kolay 16:00–17:00 arası bulunur (şans %100), en zor 13:00–14:00 arası (şans %20)"."""
+    return (f"en kolay {hour_range(ext.best_hour)} arası bulunur "
+            f"(şans {percent(ext.best.probability)}), en zor {hour_range(ext.worst_hour)} "
+            f"arası (şans {percent(ext.worst.probability)})")
+
+
+def _and_list(items: list[str]) -> str:
+    """"a", "a ve b", "a, b ve c"."""
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " ve " + items[-1]
+
+
+# "Şimdilik hafta içinden yalnızca 2 gün kayıt var."
+_FROM_GROUP = {"Hafta içi": "hafta içinden", "Hafta sonu": "hafta sonundan"}
 
 
 # ----- rules --------------------------------------------------------------------------------
@@ -207,20 +217,22 @@ def _free_hours_finding(name: str, group: str | None, ext: HourExtremes, dates: 
     """A settled pattern is told by weekday group; a thin one only as "so far (N days)"."""
     record = f"{span_adjective(cov.days)} kayıt"
     if dates < t.min_pattern_dates:
-        where = f" {group.lower()}" if group else ""
-        head = f"Şimdiye kadar{where} ({dates} gün): "
+        where = f" {_FROM_GROUP[group]}" if group else ""
+        head = f"Şimdilik{where} yalnızca {dates} gün kayıt var. "
         if ext.flat:
-            text = f"{head}gözlenen her saatte boş priz bulma şansı {percent(ext.best.probability)}."
+            text = f"{head}Gözlenen her saatte boş priz bulma şansı {percent(ext.best.probability)}."
         else:
-            text = f"{head}boş priz {easy_hard_text(ext)}."
+            text = f"{head}Boş priz {easy_hard_text(ext)}."
         return Finding(f"free_hours_{name}", "🟢", text, record)
     if ext.flat:
         text = f"{name} gözlenen her saatte boş priz bulma şansı {percent(ext.best.probability)}."
     else:
-        text = f"{name} boş priz {easy_hard_text(ext)}"
-        text += (": o saatte gidersen büyük ihtimalle beklersin."
+        text = (f"{name} boş priz en kolay {hour_range(ext.best_hour)} arası bulunur "
+                f"(şans {percent(ext.best.probability)}). En zor saat "
+                f"{hour_range(ext.worst_hour)} (şans {percent(ext.worst.probability)})")
+        text += ("; o saatte gidersen büyük ihtimalle beklersin."
                  if ext.worst.probability < 0.25 else ".")
-    return Finding(f"free_hours_{name}", "🟢", text, f"{ext.slots} saat dilimi · {record}")
+    return Finding(f"free_hours_{name}", "🟢", text, f"{ext.slots} saat dilimi, {record}")
 
 
 def socket_ranking(ctx: InsightContext) -> list[Result]:
@@ -233,21 +245,21 @@ def socket_ranking(ctx: InsightContext) -> list[Result]:
     rarely = [p for p in reversed(ranked) if p.free_share < t.rarely_free]
     if top:
         first = top[0]
-        text = (f"İlk bakılacak yer: {ctx.names.of(first.entry)} (zamanın "
-                f"{percent_in(first.free_share)} boş).")
+        text = (f"En sık boş olan priz {ctx.names.of(first.entry)}: zamanın "
+                f"{percent_in(first.free_share)} boş.")
         if len(top) > 1:
-            text += " Sonra " + ", ".join(f"{ctx.names.of(p.entry)} {percent(p.free_share)}"
-                                          for p in top[1:]) + "."
+            text += " Ardından " + _and_list([f"{ctx.names.of(p.entry)} ({percent(p.free_share)})"
+                                              for p in top[1:]]) + " geliyor."
     elif not any(p.free_share for p in ranked):
         text, rarely = "Gözlenen sürede hiçbir priz boş görülmedi.", []
     else:
         text = f"Hiçbir priz zamanın {percent_from(t.rarely_free)} fazla boş değil."
     if rarely:
         more = f" ve {len(rarely) - 4} priz daha" if len(rarely) > 4 else ""
-        text += " Nadiren boş: " + _grouped_rarely(rarely[:4], ctx.names) + more + "."
+        text += " Nadiren boş olanlar: " + _grouped_rarely(rarely[:4], ctx.names) + more + "."
     days = min(p.days for p in profiles)
     return [Finding("socket_ranking", "📍", text,
-                    f"{len(profiles)} priz · her biri en az {span_text(days)} kayıtlı")]
+                    f"{len(profiles)} priz, her biri en az {span_text(days)} kayıtlı")]
 
 
 def _rarely_note(profile) -> str:
@@ -279,15 +291,13 @@ def arrivals_departures(ctx: InsightContext) -> list[Result]:
     parts = []
     if plug.count >= t.min_events:
         hour, n = peak_window(plug.by_hour)
-        parts.append(f"en çok {hour_range(hour, 2)} arası takıyor "
-                     f"(takmaların {percent_of(n / plug.count)})")
+        parts.append(f"Prize takma en çok {hour_range(hour, 2)} arası "
+                     f"(takmaların {percent_of(n / plug.count)}).")
     if unplug.count >= t.min_events:
         hour, n = peak_window(unplug.by_hour)
-        parts.append(f"{hour_range(hour, 2)} arası çıkarıyor "
-                     f"(çıkarmaların {percent_of(n / unplug.count)})")
-    text = "İnsanlar " + ", ".join(parts) + "."
-    if len(parts) == 2:
-        text = text.replace(", ", ", en çok ", 1)
+        parts.append(f"Çıkarma en çok {hour_range(hour, 2)} arası "
+                     f"(çıkarmaların {percent_of(n / unplug.count)}).")
+    text = " ".join(parts)
     basis = f"{plug.count} takma, {unplug.count} çıkarma"
     if plug.excluded + unplug.excluded:
         basis += f"; saati kesin olmayan {plug.excluded + unplug.excluded} sayılmadı"
@@ -303,10 +313,10 @@ def occupancy_time(ctx: InsightContext) -> list[Result]:
     d = ctx.history.durations
     if d.count < t.min_sessions:
         return [_occupancy_missing("occupancy", ctx, d.count)]
-    text = f"Bir araç prizde genelde {minutes_text(d.median_min)} kalıyor"
+    text = f"Bir araç prizde genelde {minutes_text(d.median_min)} kalıyor."
     if d.q1_min is not None and d.q1_min != d.q3_min:
-        text += f" (çoğu {minutes_text(d.q1_min)} – {minutes_text(d.q3_min)})"
-    text += "."
+        text += (f" Araçların çoğu {minutes_text(d.q1_min)} ile {minutes_text(d.q3_min)} "
+                 f"arası kalıyor.")
     if d.median_min >= 180:
         text += " Dolu bir prizin kısa sürede boşalmasını bekleme."
     elif d.median_min <= 60:
@@ -326,8 +336,10 @@ def occupancy_by_arrival(ctx: InsightContext) -> list[Result]:
     if len(usable) < 2:
         return [Missing("occupancy_by_arrival", "geliş saatine göre kalma",
                         f"iki zaman diliminde {t.min_bucket_sessions}'er araç")]
-    text = "Prizde kalma, geliş saatine göre: " + " · ".join(
-        f"{b.label} {minutes_text(d.median_min)}" for b, d in usable) + "."
+    # One sentence for all buckets: "Öğle gelenler 5 sa." on its own read as a fragment. Commas
+    # only, no "ve": a bucket label ("akşam ve gece") already holds one.
+    parts = [f"{b.label} gelenler {minutes_text(d.median_min)}" for b, d in usable]
+    text = capitalised(", ".join(parts).replace(" gelenler ", " gelenler genelde ", 1)) + " kalıyor."
     longest = max(usable, key=lambda bd: bd[1].median_min)
     shortest = min(usable, key=lambda bd: bd[1].median_min)
     ratio = longest[1].median_min / shortest[1].median_min
@@ -349,12 +361,12 @@ def turnover(ctx: InsightContext) -> list[Result]:
     ranked = sorted(profiles, key=lambda p: (-p.plug_ins_per_day, ctx.names.of(p.entry)))
     busiest, quietest = ranked[0], ranked[-1]
     total = sum(p.plug_ins_per_day for p in profiles)
-    text = (f"En hareketli priz {ctx.names.of(busiest.entry)}: günde "
-            f"{decimal(busiest.plug_ins_per_day)} kullanım. En durgun "
-            f"{ctx.names.of(quietest.entry)}: günde {decimal(quietest.plug_ins_per_day)}. "
-            f"Hepsi birlikte günde ~{decimal(total)} takma.")
+    text = (f"En çok kullanılan priz {ctx.names.of(busiest.entry)}: günde "
+            f"{decimal(busiest.plug_ins_per_day)} kez. En az kullanılan "
+            f"{ctx.names.of(quietest.entry)}: günde {decimal(quietest.plug_ins_per_day)} kez. "
+            f"Hepsi birlikte günde yaklaşık {decimal(total)} kez takılıyor.")
     return [Finding("turnover", "🔄", text,
-                    f"{len(profiles)} priz · yalnızca saati kesin takmalar sayıldı")]
+                    f"{len(profiles)} priz, yalnızca saati kesin takmalar sayıldı")]
 
 
 def long_occupancy(ctx: InsightContext) -> list[Result]:
@@ -375,8 +387,8 @@ def long_occupancy(ctx: InsightContext) -> list[Result]:
             key=lambda sp: (-sp[0], ctx.names.of(sp[1].entry)))
         leaders = [(s, p) for s, p in per_socket if s > 0][:3]
         if leaders:
-            text += " En çok: " + ", ".join(f"{ctx.names.of(p.entry)} {percent(s)}"
-                                            for s, p in leaders) + "."
+            text += " En çok şu prizlerde: " + ", ".join(
+                f"{ctx.names.of(p.entry)} ({percent(s)})" for s, p in leaders) + "."
     basis = f"{len(minutes)} araç"
     if ctx.history.durations.excluded:
         basis += "; kayıt kesintisine denk gelenler sayılmadı"
@@ -394,13 +406,13 @@ def reliability(ctx: InsightContext) -> list[Result]:
         text = "Arıza yok: hiçbir priz arızalı, çevrimdışı ya da bakımda görünmedi."
     else:
         text = "Kullanılamayan prizler: " + ", ".join(
-            f"{ctx.names.of(p.entry)} {percent(p.unusable_share)} "
-            f"{UNUSABLE_TR[p.main_unusable_state]}" for p in bad) + "."
+            f"{ctx.names.of(p.entry)} ({percent(p.unusable_share)} "
+            f"{UNUSABLE_TR[p.main_unusable_state]})" for p in bad) + "."
         healthy = len(profiles) - len(bad)
         if healthy:
             text += f" Diğer {healthy} priz sorunsuz."
     return [Finding("reliability", "🛠", text,
-                    f"{len(profiles)} priz · {span_adjective(ctx.history.coverage.days)} kayıt")]
+                    f"{len(profiles)} priz, {span_adjective(ctx.history.coverage.days)} kayıt")]
 
 
 @dataclass(frozen=True)
@@ -437,17 +449,17 @@ def site_comparison(ctx: InsightContext) -> list[Result]:
     if isinstance(verdict, Missing):
         return [verdict]
     home, overall = verdict.home.busy_share, verdict.overall
-    text = (f"{locative(ctx.label)} AC prizler zamanın {percent_in(home)} dolu; diğer "
-            f"Ecobox sitelerinde ortalama {percent(overall)}.")
+    text = (f"{locative(ctx.label)} AC prizler zamanın {percent_in(home)} dolu. Diğer "
+            f"Ecobox sitelerinde bu oran ortalama {percent(overall)}.")
     if home > 1.3 * overall:
         text += f" {ctx.label} ortalamadan belirgin yoğun."
     elif home < overall / 1.3:
         text += f" {ctx.label} ortalamadan belirgin sakin."
     else:
-        text += " Ortalamaya yakın."
+        text += " Yani ortalamaya yakın."
     sockets = sum(l.sockets for l in verdict.others)
     return [Finding("sites", "🗺", text,
-                    f"{len(verdict.others)} site, {sockets} AC priz · "
+                    f"{len(verdict.others)} site, {sockets} AC priz, "
                     f"{span_adjective(verdict.days)} ortak kayıt")]
 
 
@@ -461,14 +473,15 @@ def week_change(ctx: InsightContext) -> list[Result]:
     now_free, before_free = this_week.free_share, last_week.free_share
     diff = round(100 * now_free) - round(100 * before_free)
     if abs(diff) < 3:
-        text = (f"Bu hafta boş priz bulma şansı {percent(now_free)}, geçen haftayla aynı "
+        text = (f"Boş priz bulma şansı bu hafta {percent(now_free)}, geçen haftayla aynı "
                 f"düzeyde.")
     else:
         direction = "arttı" if diff > 0 else "düştü"
-        text = (f"Bu hafta boş priz bulma şansı {percent(now_free)}, geçen hafta "
-                f"{percent(before_free)}: {abs(diff)} puan {direction}.")
+        text = (f"Boş priz bulma şansı bu hafta {percent(now_free)}, geçen hafta "
+                f"{percent(before_free)}. Yani {abs(diff)} puan {direction}.")
     per_day = [w.plug_in.count / w.coverage.dates for w in (last_week, this_week)]
-    text += f" Günde ortalama takma: {decimal(per_day[0])} → {decimal(per_day[1])}."
+    text += (f" Günde ortalama takma sayısı geçen hafta {decimal(per_day[0])}, bu hafta "
+             f"{decimal(per_day[1])}.")
     return [Finding("week_change", "📈", text,
                     f"son 7 gün ({span_adjective(days[0])} kayıt) ve önceki 7 gün "
                     f"({span_text(days[1])})")]
