@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from ecobox.idle_fee import IdleDeadline, IdleFeePolicy
 from ecobox.models import Tariff
 
 
@@ -18,6 +19,8 @@ class ChargeEstimate:
     currency: str | None
     service_price: float | None
     """Reported separately: the API does not say what unit servicePrice is in."""
+    idle: IdleDeadline | None = None
+    """When the car has to leave the socket; None while no idle-fee policy is configured."""
 
 
 @dataclass(frozen=True)
@@ -43,10 +46,12 @@ class EnergyCurve:
 
 
 class ChargeEstimator:
-    def __init__(self, car_charge_kw: float, curve: EnergyCurve, price_includes_vat: bool):
+    def __init__(self, car_charge_kw: float, curve: EnergyCurve, price_includes_vat: bool,
+                 idle_fee: IdleFeePolicy | None = None):
         self._car_kw = car_charge_kw
         self._curve = curve
         self._price_includes_vat = price_includes_vat
+        self._idle_fee = idle_fee
 
     def estimate(self, start_pct: float, target_pct: float, now: datetime,
                  connector_power_kw: float | None, tariff: Tariff | None) -> ChargeEstimate:
@@ -62,5 +67,7 @@ class ChargeEstimator:
             if not self._price_includes_vat and tariff.vat:
                 price *= 1 + tariff.vat / 100
             cost, currency, service = energy * price, tariff.currency, tariff.service_price
+        finish_at = now + duration
+        idle = None if self._idle_fee is None else self._idle_fee.deadline(finish_at)
         return ChargeEstimate(start_pct, target_pct, energy, effective_kw, duration,
-                              now + duration, cost, currency, service)
+                              finish_at, cost, currency, service, idle)

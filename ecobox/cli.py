@@ -4,7 +4,7 @@ import argparse
 import logging
 import sys
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import time, timedelta
 from pathlib import Path
 
 from ecobox import site_data, texts
@@ -13,6 +13,7 @@ from ecobox.bot import TelegramBot, TelegramOutbox
 from ecobox.charts import ChartBook
 from ecobox.commands import SLACK, TELEGRAM, CommandHandler, Conversation
 from ecobox.clock import SystemClock
+from ecobox.idle_fee import IdleFeePolicy
 from ecobox.config import Config
 from ecobox.collector_watch import CollectorWatch
 from ecobox.digest import DigestComposer, DigestSchedule, DigestTarget, WeeklyDigest
@@ -156,7 +157,17 @@ def _git_source(config: Config) -> SnapshotSource | None:
 def _estimator(config: Config) -> ChargeEstimator:
     curve = EnergyCurve(config.kwh_per_percent, config.top_band_start_pct,
                         config.top_band_kwh_per_percent)
-    return ChargeEstimator(config.car_charge_kw, curve, config.price_includes_vat)
+    return ChargeEstimator(config.car_charge_kw, curve, config.price_includes_vat,
+                           _idle_fee(config))
+
+
+def _idle_fee(config: Config) -> IdleFeePolicy | None:
+    """None while the per-minute fee is set to 0: the estimate then says nothing about it."""
+    if config.idle_fee_per_minute <= 0:
+        return None
+    return IdleFeePolicy(timedelta(minutes=config.idle_fee_tolerance_min),
+                         config.idle_fee_per_minute,
+                         time.fromisoformat(config.idle_fee_night_free_until))
 
 
 def cmd_run(_args, config: Config, storage: Storage) -> int:

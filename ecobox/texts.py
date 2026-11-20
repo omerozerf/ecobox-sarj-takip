@@ -521,8 +521,16 @@ def estimate_text(estimate: ChargeEstimate, now: datetime) -> str:
     else:
         lines.append(f"💰 ~{round(estimate.cost)} {currency_text(estimate.currency)}")
     lines.append(f"⚡ {decimal(estimate.energy_kwh)} kWh, {decimal(estimate.effective_kw)} kW ile")
-    if estimate.service_price:
-        # Not added in: the API does not say whether it is per kWh or per session.
+    idle = estimate.idle
+    if idle is not None:
+        lines.append(f"🚗 En geç {_day_word(idle.leave_by, now)} "
+                     f"{clock_text(idle.leave_by)}{_locative(idle.leave_by)} çek")
+        fee = f"{decimal(idle.per_minute)} TL/dk"
+        lines.append(f"Gece işgaliye yok; sonrası {fee}" if idle.night_free
+                     else f"Geç kalırsan {fee} işgaliye")
+    # The tariff's servicePrice has no unit in the API. When it equals the idle fee the line
+    # above already explains it; otherwise it is reported as not included.
+    if estimate.service_price and (idle is None or estimate.service_price != idle.per_minute):
         lines.append(f"Not: {decimal(estimate.service_price)} "
                      f"{currency_text(estimate.currency)} hizmet bedeli dahil değil.")
     return "\n".join(lines)

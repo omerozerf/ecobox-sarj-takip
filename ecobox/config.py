@@ -48,6 +48,10 @@ class Config:
     top_band_start_pct: float = 84.0
     top_band_kwh_per_percent: float = 1.10
     price_includes_vat: bool = True
+    idle_fee_per_minute: float = 2.0
+    """Ecobox's fee for standing at the socket after the charge; 0 leaves it out of replies."""
+    idle_fee_tolerance_min: float = 30.0
+    idle_fee_night_free_until: str = "08:30"
     log_level: str = "INFO"
     digest_weekday: int | None = 0
     """Local weekday of the weekly digest, 0 = Monday; None turns the digest off."""
@@ -112,6 +116,11 @@ class Config:
                                            or cls.top_band_kwh_per_percent),
             price_includes_vat=(get("PRICE_INCLUDES_VAT") or "true").lower()
             in ("1", "true", "yes", "evet"),
+            idle_fee_per_minute=float(get("IDLE_FEE_PER_MINUTE") or cls.idle_fee_per_minute),
+            idle_fee_tolerance_min=float(get("IDLE_FEE_TOLERANCE_MIN")
+                                         or cls.idle_fee_tolerance_min),
+            idle_fee_night_free_until=(get("IDLE_FEE_NIGHT_FREE_UNTIL")
+                                       or cls.idle_fee_night_free_until),
             log_level=get("ECOBOX_LOG_LEVEL") or cls.log_level,
             digest_weekday=_weekday(weekday),
             digest_hour=int(get("DIGEST_HOUR") or cls.digest_hour),

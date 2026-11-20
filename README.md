@@ -312,3 +312,10 @@ Araç bu AC prizlerde 10,6 kW çeker ve batarya yüzdesi başına istasyondan ~0
 `energyPrice` ile hesaplanır ve KDV dahil kabul edilir (`PRICE_INCLUDES_VAT`). Tarifede ayrıca
 bir `servicePrice` alanı var; birimi API'de belirtilmediği için hesaba katılmaz, cevapta ayrıca
 gösterilir.
+
+Tahmin ayrıca aracın en geç ne zaman çekilmesi gerektiğini söyler. Kural Ecobox'ın 12.03.2025
+tarihli uygulama duyurusundan: şarj bittikten sonra 30 dakika tolerans, aşılırsa bitiş anından
+itibaren dakikası 2 TL işgaliye; 00:00–08:30 arası işlemez ama o aralıkta biten araç 08:30'da
+çekilmiş olmalıdır (`IDLE_FEE_*`, `ecobox/idle_fee.py`). Tarifedeki `servicePrice` bu dakika
+ücretine eşitse ayrıca gösterilmez. Hedef %100'ün altındaysa aracın şarj sınırının o değere
+ayarlı olduğu varsayılır.
