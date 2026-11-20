@@ -46,7 +46,9 @@ class Config:
     slack_user_id: str | None = None
     slack_channel_name: str = "ecobox-sarj"
     slack_poll_interval_s: float = 3.0
-    car_charge_kw: float = 10.7
+    car_charge_kw: float = 10.6
+    """Effective charging power for the time estimate, fitted to the measured sessions in the
+    README (5.33 min per percent at 0.94 kWh/%); the energy and the cost still use the curve."""
     kwh_per_percent: float = 0.94
     top_band_start_pct: float = 84.0
     top_band_kwh_per_percent: float = 1.10

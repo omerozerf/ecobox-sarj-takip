@@ -311,11 +311,25 @@ User-Agent. Aralığı kısaltmayın.
 
 ## Şarj tahmini
 
-Araç bu AC prizlerde 10,6 kW çeker ve batarya yüzdesi başına istasyondan ~0,95 kWh alır
-(≈ saatte %11). İkisi de `.env`'de değiştirilebilir. Ücret, prizin güncel tarifesindeki
-`energyPrice` ile hesaplanır ve KDV dahil kabul edilir (`PRICE_INCLUDES_VAT`). Tarifede ayrıca
-bir `servicePrice` alanı var; birimi API'de belirtilmediği için hesaba katılmaz, cevapta ayrıca
-gösterilir.
+Tahmin, ölçülen oturumlara oturtulmuş iki sayıyla çalışır: batarya yüzdesi başına istasyondan
+**0,94 kWh** (%84'ün üstünde 1,10 kWh) ve süre için **10,6 kW** etkin güç; ikisi birlikte
+%84'e kadar yüzde başına ~5,3 dakika (≈ saatte %11) eder. Enerji ve ücret eğriden, süre etkin
+güçten hesaplanır; hepsi `.env`'de değiştirilebilir. Ücret, prizin güncel tarifesindeki
+`energyPrice` ile hesaplanır ve KDV dahil kabul edilir (`PRICE_INCLUDES_VAT`).
+
+### Ölçülen oturumlar
+
+Yeni bir oturumda Trumore'dan birkaç yüzde/saat okuması alınırsa buraya eklenir ve etkin güç
+yeniden oturtulur. Takma ve çekme saatleri kaydediciden okunur.
+
+| Tarih | Priz | Okumalar (yerel saat) | %84'e kadar dk / % | Not |
+|---|---|---|---|---|
+| 2026-11-13 | Ego 4 | %32 14:09 · %84 18:43 · %100 20:19 | 5,27 | fiş: 66,26 kWh (48,72 kWh %84'e kadar), ort. 10,73 kW |
+| 2026-11-20 | Ego 2 | takma 10:13 (%18) · %78 15:37 · %80 15:53'ten önce · %86 16:25'te çekildi | 5,38 | tahmin %80 için 15:41 demişti; gerçek ~15:48 |
+
+İki oturumun ortalaması 5,33 dk/%; 10,6 kW ile 0,94 kWh/% buna denk gelir (10,7 kW ile tahmin
+yaklaşık %1–2 iyimserdi). %84 sonrası için tek tam ölçüm 13 Kasım'daki; 20 Kasım'da %80 → %86
+en fazla 32 dakika sürdü, yani kırılma %84'ten önce değil.
 
 Tahmin ayrıca aracın en geç ne zaman çekilmesi gerektiğini söyler. Kural Ecobox'ın 12.03.2025
 tarihli uygulama duyurusundan: şarj bittikten sonra 30 dakika tolerans, aşılırsa bitiş anından
