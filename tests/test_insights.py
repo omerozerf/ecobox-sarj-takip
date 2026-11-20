@@ -307,3 +307,37 @@ class FormatTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HourExtremesTest(unittest.TestCase):
+    """The easiest hour comes from daytime: at night nearly every socket is free."""
+
+    MONDAY = frozenset({0})
+
+    @staticmethod
+    def grid(cells: dict[int, tuple[int, int]]):
+        from ecobox.stats import FreeCell, FreeGrid
+        return FreeGrid({(0, hour): FreeCell(free, total, 1) for hour, (free, total) in cells.items()})
+
+    def extremes(self, cells):
+        from ecobox.insights import hour_extremes
+        return hour_extremes(self.grid(cells), self.MONDAY, Thresholds())
+
+    def test_a_free_night_does_not_win_over_the_day(self):
+        ext = self.extremes({0: (20, 20), 1: (20, 20), 8: (10, 20), 15: (18, 20), 9: (4, 20)})
+        self.assertEqual(ext.best_hour, 15)
+        self.assertEqual(ext.worst_hour, 9)
+        self.assertFalse(ext.flat)
+
+    def test_a_tie_goes_to_the_hour_with_more_polls_then_the_earlier_one(self):
+        ext = self.extremes({8: (20, 20), 12: (40, 40), 16: (40, 40), 9: (5, 20)})
+        self.assertEqual(ext.best_hour, 12)
+
+    def test_without_daytime_data_the_night_is_still_told(self):
+        ext = self.extremes({0: (20, 20), 1: (10, 20), 2: (5, 20)})
+        self.assertEqual(ext.best_hour, 0)
+
+    def test_flat_looks_at_every_hour_night_included(self):
+        # Daytime all at 50 % but the night free: not "the same chance every hour".
+        self.assertFalse(self.extremes({0: (20, 20), 8: (10, 20), 9: (10, 20)}).flat)
+        self.assertTrue(self.extremes({0: (10, 20), 8: (10, 20), 9: (10, 20)}).flat)

@@ -69,6 +69,8 @@ class Thresholds:
     min_wait_days: int = 3
     """Measured waits needed before `durum` says how soon a socket usually frees up."""
     analysis_window: timedelta = timedelta(days=56)
+    day_hours: range = range(7, 21)
+    """Local hours (07:00-20:59) the easiest hour is chosen from; the page's chart shows them."""
 
 
 @dataclass(frozen=True)
@@ -138,16 +140,20 @@ class Analysis:
 
 @dataclass(frozen=True)
 class HourExtremes:
-    """The easiest and the hardest hour to find a free socket, over hours with enough data."""
+    """The easiest and the hardest hour to find a free socket, over hours with enough data.
+
+    The easiest hour is picked among daytime hours (`Thresholds.day_hours`) whenever any of
+    them has enough data: at night nearly every socket is free, so "easiest 00:00-01:00" was
+    true and useless. Ties go to the hour with the most polls behind it, then the earlier one.
+    The hardest hour is taken over every hour, as before.
+    """
     best_hour: int
     best: FreeCell
     worst_hour: int
     worst: FreeCell
     slots: int
-
-    @property
-    def flat(self) -> bool:
-        return self.best.probability == self.worst.probability
+    flat: bool
+    """Every hour with data has the same chance, night included."""
 
 
 def hour_extremes(grid: FreeGrid, weekdays: frozenset[int],
@@ -156,9 +162,11 @@ def hour_extremes(grid: FreeGrid, weekdays: frozenset[int],
     hours = [(h, c) for h, c in enumerate(profile) if c.total >= t.min_hour_polls]
     if len(hours) < t.min_ranked_hours:
         return None
-    best_hour, best = max(hours, key=lambda hc: (hc[1].probability, -hc[0]))
+    daytime = [(h, c) for h, c in hours if h in t.day_hours]
+    best_hour, best = max(daytime or hours, key=lambda hc: (hc[1].probability, hc[1].total, -hc[0]))
     worst_hour, worst = min(hours, key=lambda hc: (hc[1].probability, hc[0]))
-    return HourExtremes(best_hour, best, worst_hour, worst, len(hours))
+    flat = len({c.probability for _, c in hours}) == 1
+    return HourExtremes(best_hour, best, worst_hour, worst, len(hours), flat)
 
 
 def observed_dates(polls: list[PollView], weekdays: frozenset[int]) -> int:
