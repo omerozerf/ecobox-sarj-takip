@@ -2,9 +2,15 @@
 // their own: each one leads (or follows) the section whose chart it talks about, so the page
 // never says a thing twice. Every renderer takes its slice of data.json and fills its own
 // container; a finding the map does not know lands in "Diğer bulgular", never nowhere.
+//
+// The secondary area ("Arge tarafı") follows the primary one in each section in a quieter form:
+// a small heading, its findings as lead sentences only (the rest behind one disclosure), and a
+// compact version of the section's figure where one helps.
 
-import { empty, h, put, svg } from './dom.js';
+import { leadSentence } from './prose.js';
+import { empty, h, prose, put, svg } from './dom.js';
 import { decimal, hourLabel, int, minutes, pct, stamp } from './format.js';
+import { icon } from './icons.js';
 
 const SECTION_OF = {
   week_change: 'when',
@@ -25,35 +31,120 @@ export function findingsBySection(findings) {
   return out;
 }
 
-const findingLines = (f, textClass) => [h('p', { class: textClass, text: f.text }), h('p', { class: 'quiet basis', text: f.basis })];
+/** A finding as it reads best: one sentence per line, figures in bold, its basis small under it. */
+export const findingLines = (f, textClass) => [h('p', { class: textClass }, prose(f.text)), h('p', { class: 'basis', text: f.basis })];
 
-/** The first finding leads the section; the rest are a compact list under its chart. */
+let disclosures = 0;
+
+/**
+ * Further findings behind one quiet row, "N bulgu daha", closed by default; open, the same
+ * prose as the lead (one sentence per line, figures in bold, basis under each). null when
+ * there are none.
+ */
+export function moreFindings(findings) {
+  if (!findings.length) return null;
+  disclosures += 1;
+  const id = `more-${disclosures}`;
+  const body = h('ul', { id, class: 'notes more-body', hidden: true },
+    findings.map((f) => h('li', {}, findingLines(f, 'note'))));
+  const button = h('button', { type: 'button', class: 'more-row', 'aria-expanded': 'false', 'aria-controls': id },
+    h('span', { text: `${findings.length} bulgu daha` }), icon('chevron'));
+  button.addEventListener('click', () => {
+    const open = body.hidden;
+    body.hidden = !open;
+    button.setAttribute('aria-expanded', String(open));
+  });
+  return h('div', { class: 'more' }, button, body);
+}
+
+/**
+ * The first finding leads the section in full; the rest wait behind "N bulgu daha" under its
+ * chart. Without a lead slot the lead opens the rest slot.
+ */
 export function renderFindingSlots(root, findings) {
   const lead = root.querySelector('[data-findings=lead]');
   const rest = root.querySelector('[data-findings=rest]');
   if (lead) put(lead, findings.length ? findingLines(findings[0], 'lead') : null);
   if (rest) {
     const others = findings.slice(lead ? 1 : 0);
-    put(rest, others.length ? h('ul', { class: 'notes' }, others.map((f) => h('li', {}, findingLines(f, 'note')))) : null);
+    put(rest, lead || !others.length ? moreFindings(others)
+      : [h('div', { class: 'rest-lead' }, findingLines(others[0], 'lead')), moreFindings(others.slice(1))]);
   }
 }
 
-export function renderOtherFindings(card, findings, missing) {
-  const other = card.querySelector('[data-section=other]');
-  card.querySelector('[data-part=other]').hidden = !findings.length;
-  put(other, findings.length ? h('ul', { class: 'notes' }, findings.map((f) => h('li', {}, findingLines(f, 'note')))) : null);
-  card.querySelector('[data-part=missing]').hidden = !missing.length;
-  put(card.querySelector('[data-section=missing]'), h('ul', { class: 'missing-list' }, missing.map((m) => h('li', { text: m.text }))));
-  card.hidden = !findings.length && !missing.length;
+/**
+ * The secondary area's findings, short: the lead finding's first sentence with a small "tümü"
+ * button after it, which opens every finding in full with what it rests on. null without
+ * findings.
+ */
+export function compactFindings(findings) {
+  if (!findings.length) return null;
+  const [first, rest] = leadSentence(findings[0].text);
+  const lead = h('p', { class: 'brief' }, prose(first));
+  if (findings.length === 1 && !rest && !findings[0].basis) return lead;
+  disclosures += 1;
+  const id = `more-${disclosures}`;
+  const body = h('ul', { id, class: 'notes brief-more', hidden: true },
+    findings.map((f) => h('li', {}, findingLines(f, 'note'))));
+  const label = findings.length > 1 ? `${findings.length} bulgunun tamamı` : 'ayrıntı';
+  const button = h('button', { type: 'button', class: 'more-link', 'aria-expanded': 'false', 'aria-controls': id },
+    label, icon('chevron'));
+  button.addEventListener('click', () => {
+    const open = body.hidden;
+    body.hidden = !open;
+    button.setAttribute('aria-expanded', String(open));
+  });
+  lead.append(' ', button);
+  return [lead, body];
 }
 
-export function renderRanking(root, data) {
+/**
+ * A quiet block for the secondary area, hidden when empty: a small heading, then the given
+ * parts. When it starts with a short sentence the name runs in before it instead, a line less.
+ */
+export function renderSecondary(root, area, ...parts) {
+  const filled = parts.flat(Infinity).filter(Boolean);
+  root.hidden = !area || !filled.length;
+  if (root.hidden) return;
+  if (filled[0].classList.contains('brief')) {
+    filled[0].prepend(h('strong', { class: 'run-in', text: area.label }), ' ');
+    put(root, filled);
+  } else {
+    put(root, h('h3', { class: 'sub-area', text: area.label }), filled);
+  }
+}
+
+/** Findings no section claims: a section of their own, shown only when there are some. */
+export function renderOtherFindings(section, findings, secondary = null, secondaryFindings = []) {
+  put(section.querySelector('[data-section=other]'),
+    findings.length ? h('ul', { class: 'notes' }, findings.map((f) => h('li', {}, findingLines(f, 'note')))) : null);
+  renderSecondary(section.querySelector('[data-section=other-secondary]'), secondary, compactFindings(secondaryFindings));
+  section.hidden = !findings.length && !secondaryFindings.length;
+}
+
+/**
+ * What the record is still too short for: one quiet line (or a short list) above the footer.
+ * A line the secondary area shares word for word is said once; its own lines carry its name.
+ */
+export function renderMissing(root, primary, secondary = null) {
+  const said = new Set(primary.map((m) => m.text));
+  const missing = [...primary, ...(secondary?.missing ?? [])
+    .filter((m) => !said.has(m.text)).map((m) => ({ ...m, text: `${secondary.label}: ${m.text}` }))];
+  root.hidden = !missing.length;
+  if (!missing.length) return;
+  const label = h('span', { class: 'missing-label' }, icon('info'), 'Henüz yeterli veri yok');
+  put(root, missing.length === 1
+    ? [h('p', {}, label), h('p', { class: 'missing-one', text: missing[0].text })]
+    : [h('p', {}, label), h('ul', { class: 'missing-list' }, missing.map((m) => h('li', { text: m.text })))]);
+}
+
+export function renderRanking(root, data, { compact = false } = {}) {
   const min = data.thresholds.min_socket_samples;
   if (!data.ranking.length) {
     put(root, empty('Henüz hiçbir prizde ölçüm yok.'));
     return;
   }
-  const detailOf = (r) => `${int(r.samples)} ölçüm · ${decimal(r.observed_days)} gün kayıt`;
+  const detailOf = (r) => `${int(r.samples)} ölçüm, ${decimal(r.observed_days)} günlük kayıt`;
   const details = new Set(data.ranking.map(detailOf));
   const shared = details.size === 1 && data.ranking.every((r) => r.samples >= min) ? [...details][0] : null;
   const rows = data.ranking.map((r) => {
@@ -63,10 +154,11 @@ export function renderRanking(root, data) {
       h('span', { class: 'rank-name', text: r.name }),
       ranked ? h('div', { class: 'bar', 'aria-hidden': 'true' }, h('span', { vars: { '--v': r.free_share } })) : null,
       h('span', { class: 'rank-value' }, ranked ? pct(r.free_share) : 'henüz sıralanmadı'),
-      detail ? h('p', { class: 'quiet rank-detail', text: ranked ? detail : `${detail} · sıralama için ${int(min)} ölçüm gerekiyor` }) : null);
+      detail ? h('p', { class: 'quiet rank-detail', text: ranked ? detail : `${detail}. Sıralama için ${int(min)} ölçüm gerekiyor.` }) : null);
   });
-  put(root, h('ol', { class: 'ranking', 'aria-label': 'Prizler, en sık boş olandan başlayarak' }, rows),
-    shared ? h('p', { class: 'quiet ranking-basis', text: `Her priz için ${shared}.` }) : null);
+  const list = h('ol', { class: `ranking${compact ? ' is-compact' : ''}`, 'aria-label': `${compact ? `${data.label}: p` : 'P'}rizler, en sık boş olandan başlayarak` }, rows);
+  put(root, list, shared && !compact ? h('p', { class: 'quiet ranking-basis', text: `Her priz için ${shared}.` }) : null);
+  return list;
 }
 
 export function renderStay(root, data, findings) {
@@ -86,9 +178,17 @@ export function renderStay(root, data, findings) {
     const excluded = data.plug_in.excluded + data.unplug.excluded;
     const notes = [`${int(data.plug_in.count)} takma, ${int(data.unplug.count)} çıkarma`];
     if (excluded) notes.push(`saati tam bilinmeyen ${int(excluded)} takma ya da çıkarma sayılmadı`);
-    parts.push(h('p', { class: 'quiet', text: `${notes.join(' · ')}.` }));
+    parts.push(h('p', { class: 'quiet', text: `${notes.join('; ')}.` }));
   }
   put(root, parts);
+}
+
+/** The secondary area's stay: its findings, short; a plain line while the engine still waits. */
+export function stayBrief(data, findings) {
+  const d = data.durations;
+  if (findings.some((f) => f.key === 'occupancy') || d.median_min == null) return compactFindings(findings);
+  const line = h('p', { class: 'brief', text: `Şimdiye kadar ${d.count} araç görüldü; genelde ${minutes(d.median_min)} kaldılar.` });
+  return [line, compactFindings(findings)];
 }
 
 function quartileBar(d) {
@@ -144,7 +244,8 @@ function arrivalsChart(plug, unplug) {
       h('span', { class: 'key-item' }, h('span', { class: 'key key-unplug' }), 'çıkarma')));
 }
 
-export function renderSites(root, data) {
+/** Site comparison: each area against the other Ecobox sites (primary bold, secondary quiet). */
+export function renderSites(root, data, model) {
   const sites = data.sites;
   if (!sites) {
     put(root, empty('Diğer Ecobox siteleri henüz kaydedilmedi; karşılaştırma onlar kaydedilince gelecek.'));
@@ -152,8 +253,12 @@ export function renderSites(root, data) {
   }
   const parts = [];
   const compare = [];
-  if (sites.home) compare.push(compareBar(sites.home.name, sites.home.busy_share, true));
-  if (sites.overall != null) compare.push(compareBar(`Diğer ${int(sites.others)} site`, sites.overall, false));
+  const rowOf = (area) => area && sites.loads.find((l) => l.area === area.key);
+  const primary = rowOf(model.primary);
+  const secondary = rowOf(model.secondary);
+  if (primary) compare.push(compareBar(primary.name, primary.busy_share, 'is-home'));
+  if (secondary) compare.push(compareBar(secondary.name, secondary.busy_share, 'is-secondary'));
+  if (sites.overall != null) compare.push(compareBar(`Diğer ${int(sites.others)} site`, sites.overall, ''));
   parts.push(h('div', { class: 'compare' }, compare));
   parts.push(h('p', { class: 'quiet', text: sites.overall == null
     ? 'Diğer sitelerle karşılaştırma için henüz yeterli ortak kayıt yok.'
@@ -165,17 +270,19 @@ export function renderSites(root, data) {
     put(root, parts);
     return;
   }
-  const rows = loads.map((l, i) => h('li', { class: `site${l.home ? ' is-home' : ''}` },
+  const rows = loads.map((l, i) => h('li', { class: `site${l.area === 'primary' ? ' is-home' : l.area ? ' is-secondary' : ''}` },
     h('span', { class: 'site-rank', text: String(i + 1) }),
-    h('span', { class: 'site-name' }, l.name, h('span', { class: 'quiet', text: ` · ${l.sockets} priz` })),
+    h('span', { class: 'site-name' }, l.name, h('span', { class: 'quiet', text: ` (${l.sockets} priz)` })),
     h('span', { class: 'site-value', text: pct(l.busy_share) }),
     h('div', { class: 'bar bar-busy', 'aria-hidden': 'true' }, h('span', { vars: { '--v': l.busy_share } }))));
   const n = loads.length;
-  const list = h('div', { id: 'site-list', hidden: true },
+  const list = h('div', { id: 'site-list', class: 'disclosure-body', hidden: true },
     h('p', { class: 'quiet sites-caption', text: `En az ${min} AC prizli siteler, en dolu olandan` }),
     h('ol', { class: 'sites', 'aria-label': 'Siteler, en dolu olandan başlayarak' }, rows));
-  const button = h('button', { type: 'button', class: 'more', 'aria-expanded': 'false', 'aria-controls': 'site-list' });
-  const label = (open) => { button.textContent = open ? 'Listeyi gizle' : `${min}+ prizli ${n} siteyi göster`; };
+  const text = h('span', { class: 'disclose-label' });
+  const button = h('button', { type: 'button', class: 'disclose-row', 'aria-expanded': 'false', 'aria-controls': 'site-list' },
+    text, h('span', { class: 'chevron' }, icon('chevron')));
+  const label = (open) => { text.textContent = open ? 'Listeyi gizle' : `${min}+ prizli ${n} siteyi göster`; };
   button.addEventListener('click', () => {
     const open = list.hidden;
     list.hidden = !open;
@@ -183,12 +290,12 @@ export function renderSites(root, data) {
     label(open);
   });
   label(false);
-  parts.push(button, list);
+  parts.push(h('div', { class: 'disclosure' }, button, list));
   put(root, parts);
 }
 
-function compareBar(name, share, home) {
-  return h('div', { class: `compare-row${home ? ' is-home' : ''}` },
+function compareBar(name, share, kind) {
+  return h('div', { class: `compare-row ${kind}`.trim() },
     h('span', { class: 'compare-name', text: name }),
     h('span', { class: 'compare-value', text: `${pct(share)} dolu` }),
     h('div', { class: 'bar bar-busy', 'aria-hidden': 'true' }, h('span', { vars: { '--v': share } })));
@@ -198,7 +305,7 @@ export function renderFooter(root, data) {
   const c = data.coverage;
   const lines = [];
   lines.push(c.first
-    ? `Kayıt: ${stamp(Date.parse(c.first))} – ${stamp(Date.parse(c.last))} · ${decimal(c.observed_days)} günlük gözlem, ${c.dates} farklı gün · ${c.ac_sockets} AC priz.`
+    ? `Kayıt ${stamp(Date.parse(c.first))} ile ${stamp(Date.parse(c.last))} arası: ${decimal(c.observed_days)} günlük gözlem, ${c.dates} farklı gün, ${c.ac_sockets} AC priz. AC istatistikleri DC prizleri saymaz; DC'nin kendi bölümü var.`
     : 'Henüz kayıt yok.');
   const weeks = Math.round((Date.parse(data.window.until) - Date.parse(data.window.since)) / (7 * 86_400_000));
   lines.push(`İstatistikler ${stamp(Date.parse(data.generated_at))} itibarıyla, son ${weeks} haftanın kaydından hesaplandı. Saatler Türkiye saatidir.`);

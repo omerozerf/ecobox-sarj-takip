@@ -1,7 +1,7 @@
 import unittest
 from datetime import UTC, date, datetime, timedelta
 
-from helpers import EGO, F_BLOK_2, GAP_S, POLL_S, World
+from helpers import EGO, EVERYTHING, F_BLOK_2, GAP_S, HACETTEPE_TERMS, POLL_S, World
 
 from ecobox.clock import local_bucket, to_local
 from ecobox.records import Transition
@@ -95,6 +95,61 @@ class SyntheticHistoryTest(unittest.TestCase):
     def test_all_ac_in_scope_includes_offline_sockets(self):
         everything = self.stats.availability(Selection())
         self.assertEqual(len(everything), 12)  # the two DC connectors are left out
+
+
+class LocationTermsTest(unittest.TestCase):
+    """`location_terms` (any of) and `excluded_terms` (none of), over every fixture site."""
+
+    @classmethod
+    def setUpClass(cls):
+        world = World(record=EVERYTHING)
+        cls.catalog = world.storage.catalog()
+        world.storage.close()
+
+    def labels(self, selection: Selection) -> set[str]:
+        return {e.label for e in selection.apply(self.catalog)}
+
+    def test_any_of_the_terms_picks_and_folds_case(self):
+        picked = self.labels(Selection(location_terms=("EGO", "f blok"), scope_terms=HACETTEPE_TERMS))
+        self.assertEqual(picked, {"Hacettepe Ego - 1 Ac", "Hacettepe Ego - 2 Ac",
+                                  "Hacettepe Ego - 3 Ac", "Hacettepe Ego - 4 Ac", "Hacettepe-F",
+                                  "Hacettepe - F Blok 2", "Hacettepe - F Blok 3",
+                                  "Hacettepe - F Blok 4"})
+
+    def test_a_bare_dc_picks_other_sites_until_the_scope_narrows_it(self):
+        dc = Selection(location_terms=("dc",), ac_only=False)
+        self.assertIn("Mira Beytepe - Dc", self.labels(dc))
+        scoped = Selection(location_terms=("dc",), ac_only=False, scope_terms=HACETTEPE_TERMS)
+        self.assertEqual(self.labels(scoped), {"Hacettepe-DC", "Hacettepe-DC #2"})
+
+    def test_excluded_terms_keep_exactly_the_rest_of_the_scope(self):
+        terms = ("ego", "f blok", "dc")
+        scope = Selection(ac_only=False, scope_terms=HACETTEPE_TERMS)
+        picked = Selection(ac_only=False, scope_terms=HACETTEPE_TERMS, location_terms=terms)
+        rest = Selection(ac_only=False, scope_terms=HACETTEPE_TERMS, excluded_terms=terms)
+        self.assertEqual(self.labels(rest), {"Hacettepe-Arge", "Hacettepe 3. Arge Otopark - 1",
+                                             "Hacettepe 3. Arge Otopark - 2",
+                                             "Hacettepe 3. Arge Otopark - 3"})
+        self.assertFalse(self.labels(picked) & self.labels(rest))
+        self.assertEqual(self.labels(picked) | self.labels(rest), self.labels(scope))
+
+    def test_empty_terms_and_blank_ones_add_no_condition(self):
+        everything = self.labels(Selection())
+        self.assertEqual(self.labels(Selection(location_terms=(), excluded_terms=())), everything)
+        self.assertEqual(self.labels(Selection(location_terms=(" ",), excluded_terms=("",))),
+                         everything)
+
+    def test_dc_only_keeps_the_scopes_dc_connectors(self):
+        dc = Selection(ac_only=False, dc_only=True, scope_terms=HACETTEPE_TERMS)
+        self.assertEqual(self.labels(dc), {"Hacettepe-DC", "Hacettepe-DC #2"})
+        self.assertIn("Mira Beytepe - Dc", self.labels(Selection(ac_only=False, dc_only=True)))
+        self.assertEqual(self.labels(Selection(dc_only=True)), set())  # ac_only still wins
+
+    def test_all_conditions_hold_together(self):
+        both = Selection(location_term="ego", location_terms=("ego", "f blok"),
+                         excluded_terms=("4",))
+        self.assertEqual(self.labels(both), {"Hacettepe Ego - 1 Ac", "Hacettepe Ego - 2 Ac",
+                                             "Hacettepe Ego - 3 Ac"})
 
 
 class WaitUntilFreeTest(unittest.TestCase):

@@ -29,6 +29,11 @@ class Selection:
     Default: every AC connector recorded, whole history. `scope_terms` restricts to a scope
     (the display scope, e.g. Hacettepe); `since`/`until` bound the samples, transitions and
     gaps read.
+
+    Location words match as substrings of "<location name> <display name>", case- and
+    Turkish-i-folded: `location_term` must match; of `location_terms`, at least one must
+    (empty: no such condition); of `excluded_terms`, none may. All conditions hold together.
+    `dc_only` keeps DC connectors only (set `ac_only` False with it).
     """
 
     location_term: str | None = None
@@ -37,22 +42,33 @@ class Selection:
     scope_terms: tuple[str, ...] = ()
     since: datetime | None = None
     until: datetime | None = None
+    location_terms: tuple[str, ...] = ()
+    excluded_terms: tuple[str, ...] = ()
+    dc_only: bool = False
 
     def window(self, since: datetime | None, until: datetime | None) -> "Selection":
         return replace(self, since=since, until=until)
 
     def apply(self, catalog: list[CatalogEntry]) -> list[CatalogEntry]:
         scope = ScopeFilter(self.scope_terms)
+        any_of = tuple(fold(t) for t in self.location_terms if t.strip())
+        none_of = tuple(fold(t) for t in self.excluded_terms if t.strip())
         chosen = []
         for entry in catalog:
             if self.ac_only and not entry.is_ac:
+                continue
+            if self.dc_only and entry.is_ac:
                 continue
             if not scope.matches_names(entry.display_name, entry.location_name):
                 continue
             if self.connector_id is not None and entry.connector_id != self.connector_id:
                 continue
-            if self.location_term is not None and fold(self.location_term) not in fold(
-                    f"{entry.location_name} {entry.display_name}"):
+            place = fold(f"{entry.location_name} {entry.display_name}")
+            if self.location_term is not None and fold(self.location_term) not in place:
+                continue
+            if any_of and not any(t in place for t in any_of):
+                continue
+            if any(t in place for t in none_of):
                 continue
             chosen.append(entry)
         return chosen

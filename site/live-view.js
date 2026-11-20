@@ -1,11 +1,16 @@
-// "Şu an": the big answer, the free sockets named right under it, and one tile per socket
-// grouped by location. Groups and tiles are built once from data.json; a live reading only
+// "Şu an": the big answer, the free sockets named right under it, and one row per socket
+// ("tile" in the code) in a single grouped list: a head row per location, its sockets under it.
+// Groups and tiles are built once from data.json; a live reading only
 // repaints them, reorders the groups (most free first) and folds the ones with nothing free.
+//
+// All of that is the primary area. The secondary area ("Arge tarafı") gets one quiet line under
+// the answer and one folded row under the list; its sockets never count in the big number.
 
 import { empty, h, put } from './dom.js';
 import { ago, clock, decimal, minutes, price, titled } from './format.js';
 import { chargePost, icon } from './icons.js';
 import { acStatus } from './live.js';
+import { areaModel } from './areas.js';
 const collator = new Intl.Collator('tr', { numeric: true });
 const PROBLEM_STATES = new Set(['faulted', 'offline', 'maintenance', 'unavailable']);
 
@@ -26,9 +31,9 @@ export function socketGroups(sockets) {
     s.groups.forEach((w) => group.words.add(w));
   }
   const label = (g) => {
-    if (g.key === 'dc') return 'DC · hızlı şarj';
+    if (g.key === 'dc') return 'DC hızlı şarj';
     if (g.key === 'other') return 'Diğer';
-    return [...g.words].map(titled).join(' · ');
+    return [...g.words].map(titled).join(', ');
   };
   const rank = (g) => (g.key === 'dc' ? 2 : g.key === 'other' ? 1 : 0);
   return [...groups.values()]
@@ -44,10 +49,10 @@ export function orderByFree(groups, freeOf) {
     .map(({ g }) => g);
 }
 
-/** "22 kW · 9,29 TL/kWh"; each part kept on one line. */
+/** "22 kW, 9,29 TL/kWh"; each part kept on one line. */
 function socketMeta(socket) {
   return [socket.power_kw ? `${decimal(socket.power_kw)} kW` : null, price(socket.price)]
-    .filter(Boolean).map((part) => part.replaceAll(' ', ' ')).join(' · ') || 'güç ve fiyat bilinmiyor';
+    .filter(Boolean).map((part) => part.replaceAll(' ', ' ')).join(', ') || 'güç ve fiyat bilinmiyor';
 }
 
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -58,7 +63,13 @@ export class LiveView {
     this.labels = { ...data.state_labels, charging: 'dolu', unknown: 'bilinmiyor', none: 'ölçüm yok', loading: 'yükleniyor' };
     this.result = null;
     this.failed = false;
+    const areas = areaModel(data);
+    this.areas = areas;
+    this.primary = areas.socketsOf(areas.primary);
+    this.secondary = areas.secondary ? areas.socketsOf(areas.secondary) : [];
     this.el = {
+      otherLine: root.querySelector('[data-live=other-line]'),
+      other: root.querySelector('[data-live=other]'),
       eyebrow: root.querySelector('[data-live=eyebrow]'),
       big: root.querySelector('[data-live=big]'),
       free: root.querySelector('[data-live=free]'),
@@ -74,9 +85,40 @@ export class LiveView {
     this.settled = false; // the first fetch has answered, one way or the other
     this.el.art.replaceChildren(chargePost());
     this.tiles = new Map();
-    this.groups = socketGroups(data.sockets).map((g, i) => this.buildGroup(g, i));
+    this.groups = socketGroups(this.primary).map((g, i) => this.buildGroup(g, i));
     if (this.groups.length) put(this.el.groups, this.groups.map((g) => g.node));
     else put(this.el.groups, empty('Bu kapsamda priz yok.'));
+    this.other = this.secondary.length ? this.buildOther(areas.secondary) : null;
+  }
+
+  /** The secondary area: one folded row; open, a compact list of its sockets. */
+  buildOther(area) {
+    const metas = new Set(this.secondary.map(socketMeta));
+    const shared = metas.size === 1 ? [...metas][0] : null;
+    const summary = h('span', { class: 'other-summary' });
+    const toggle = h('button', { type: 'button', class: 'other-head', 'aria-expanded': 'false', 'aria-controls': 'other-body' },
+      h('span', { class: 'other-name', text: `Diğer yerleşke: ${area.label}` }), summary, icon('chevron'));
+    const sockets = [...this.secondary].sort((a, b) => collator.compare(a.name, b.name));
+    const body = h('div', { class: 'other-body', id: 'other-body', hidden: true },
+      shared ? h('p', { class: 'other-meta', text: shared }) : null,
+      h('ul', { class: 'tiles' }, sockets.map((s) => this.tile(s, shared == null))));
+    this.el.other.setAttribute('aria-label', `Diğer yerleşke: ${area.label}`);
+    put(this.el.other, toggle, body);
+    this.el.other.hidden = false;
+    const other = { area, toggle, body, summary };
+    toggle.addEventListener('click', () => this.setOtherOpen(toggle.getAttribute('aria-expanded') !== 'true'));
+    this.el.otherLine.addEventListener('click', () => {
+      this.setOtherOpen(true);
+      this.el.other.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+      toggle.focus({ preventScroll: true });
+    });
+    return other;
+  }
+
+  setOtherOpen(open) {
+    this.other.toggle.setAttribute('aria-expanded', String(open));
+    this.other.body.hidden = !open;
+    this.el.other.dataset.open = open ? 'yes' : 'no';
   }
 
   buildGroup(group, index) {
@@ -85,9 +127,12 @@ export class LiveView {
     const summary = h('span', { class: 'group-summary' });
     const bodyId = `group-${index}`;
     const toggle = h('button', { type: 'button', class: 'group-head', 'aria-expanded': 'true', 'aria-controls': bodyId },
-      icon(group.key === 'dc' ? 'dc' : 'ac'), h('span', { class: 'group-name', text: group.label }), summary, icon('chevron'));
+      icon(group.key === 'dc' ? 'dc' : 'ac'),
+      h('span', { class: 'group-text' },
+        h('span', { class: 'group-name', text: group.label }),
+        shared ? h('span', { class: 'group-meta', text: shared }) : null),
+      summary, icon('chevron'));
     const body = h('div', { class: 'group-body', id: bodyId },
-      shared ? h('p', { class: 'group-meta', text: shared }) : null,
       h('ul', { class: 'tiles' }, group.sockets.map((s) => this.tile(s, shared == null))));
     const node = h('section', { class: 'group', 'aria-label': group.label, 'data-open': 'yes' }, toggle, body);
     const entry = { ...group, node, toggle, body, summary, touched: false };
@@ -127,7 +172,7 @@ export class LiveView {
     let text = this.labels[state] ?? state;
     if (entry?.since) {
       const span = minutes(Math.max(60_000, until - entry.since.start) / 60_000);
-      text += entry.since.exact && !stale ? ` · ${span}` : ` · en az ${span}`;
+      text += entry.since.exact && !stale ? ` (${span})` : ` (en az ${span})`;
     }
     const name = state === 'available' ? 'free' : state === 'charging' ? 'busy'
       : PROBLEM_STATES.has(state) ? 'fault' : state === 'loading' ? null : 'unknown';
@@ -156,9 +201,9 @@ export class LiveView {
     this.render(now);
   }
 
-  /** What the chart needs from the live side: the AC figure, or null without a reading. */
-  status(now = Date.now()) {
-    return acStatus(this.data.sockets, this.result, now);
+  /** What the chart needs from the live side: an area's AC figure, or null without a reading. */
+  status(key = 'primary', now = Date.now()) {
+    return acStatus(key === 'secondary' ? this.secondary : this.primary, this.result, now);
   }
 
   stateOf(socket) {
@@ -186,17 +231,18 @@ export class LiveView {
       delete this.el.age.dataset.stale;
       this.shownFree = null;
       this.banner(this.failed ? 'error' : null);
+      this.renderOther(false);
       return;
     }
     const age = now - result.at;
-    const status = acStatus(this.data.sockets, result, now);
+    const status = acStatus(this.primary, result, now);
     const { stale } = status;
-    const ac = this.data.sockets.filter((s) => s.kind === 'AC');
-    const dc = this.data.sockets.filter((s) => s.kind === 'DC');
+    const ac = this.primary.filter((s) => s.kind === 'AC');
+    const dc = this.primary.filter((s) => s.kind === 'DC');
     const free = ac.filter((s) => this.stateOf(s) === 'available');
     const missing = status.total - status.reading;
 
-    this.setText(this.el.eyebrow, stale ? 'Son bilinen durum' : 'Şu an · AC prizler');
+    this.setText(this.el.eyebrow, stale ? 'Son bilinen durum' : 'Şu an, AC prizler');
     const verb = stale ? (free.length ? 'priz boştu' : 'Boş priz yoktu') : (free.length ? 'priz boş' : 'Boş priz yok');
     const changed = this.shownFree != null && this.shownFree !== status.free;
     this.shownFree = status.free;
@@ -207,11 +253,11 @@ export class LiveView {
 
     const ordered = orderByFree(this.groups, (g) => g.sockets.filter((s) => this.stateOf(s) === 'available').length);
     this.renderFreeLine(free, ordered, ac, stale);
-    const parts = [`${ac.length} AC prizden`];
-    if (missing) parts.push(`${missing} prizde ölçüm yok`);
-    if (dc.length) parts.push(`DC: ${dc.filter((s) => this.stateOf(s) === 'available').length}/${dc.length} boş`);
-    this.setText(this.el.sub, parts.join(' · '));
-    this.setText(this.el.age, `Son ölçüm ${clock(result.at)} · ${ago(age)}`);
+    // "8 AC priz sayıldı. DC hızlı şarjda 1/2 boş." Plain sentences, no symbol chains.
+    const parts = [missing ? `${ac.length} AC prizden ${missing} tanesinde ölçüm yok.` : `${ac.length} AC priz sayıldı.`];
+    if (dc.length) parts.push(`DC hızlı şarjda ${dc.filter((s) => this.stateOf(s) === 'available').length}/${dc.length} boş.`);
+    this.setText(this.el.sub, parts.join(' '));
+    this.setText(this.el.age, `Son ölçüm ${clock(result.at)}, ${ago(age)}`);
     this.el.age.dataset.stale = stale ? 'yes' : 'no';
     this.banner(stale ? 'stale' : this.failed ? 'retry' : null, age);
 
@@ -220,6 +266,26 @@ export class LiveView {
       if (entry?.since) this.paintTile(s.id, entry, stale ? result.at : now, stale);
     }
     this.renderGroups(ordered);
+    this.renderOther(stale);
+  }
+
+  /** The secondary line under the answer and its folded row: "Arge tarafı: 1/4 boş". */
+  renderOther(stale) {
+    if (!this.other) return;
+    const line = this.el.otherLine.parentElement;
+    if (!this.result) {
+      line.hidden = true;
+      this.other.summary.textContent = '';
+      return;
+    }
+    const states = this.secondary.map((s) => this.stateOf(s));
+    const free = states.filter((s) => s === 'available').length;
+    const summary = this.summary(states, free);
+    this.other.summary.textContent = summary;
+    this.el.other.dataset.free = free ? 'yes' : 'no';
+    line.hidden = false;
+    line.dataset.free = free ? 'yes' : 'no';
+    this.setText(this.el.otherLine, `${this.other.area.label}: ${stale ? 'son ölçümde ' : ''}${summary}`);
   }
 
   /** The big answer just changed on a refresh: a short fade instead of a jump. */
@@ -261,7 +327,7 @@ export class LiveView {
     }
   }
 
-  /** "2/4 boş" while one is free; otherwise what the sockets are: "4/4 dolu", "3 dolu · 1 arızalı". */
+  /** "2/4 boş" while one is free; otherwise what the sockets are: "4/4 dolu", "3 dolu, 1 arızalı". */
   summary(states, free) {
     const n = states.length;
     if (free) return `${free}/${n} boş`;
@@ -271,7 +337,7 @@ export class LiveView {
       counts.set(label, (counts.get(label) ?? 0) + 1);
     }
     if (counts.size === 1) return `${n}/${n} ${[...counts.keys()][0]}`;
-    return [...counts].map(([label, count]) => `${count} ${label}`).join(' · ');
+    return [...counts].map(([label, count]) => `${count} ${label}`).join(', ');
   }
 
   /** A free chip's target: open its group, bring the tile into view and focus it. */

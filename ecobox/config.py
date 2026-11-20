@@ -37,6 +37,9 @@ class Config:
     """Display scope: what the bot commands and the default analysis show."""
     record_scope_terms: tuple[str, ...] = ()
     """Record scope: which charge points are sampled; empty means every Ecobox site."""
+    primary_terms: tuple[str, ...] = ("ego", "f blok", "dc")
+    """Public page: location words, matched inside the display scope, of the sockets shown
+    first ("bizim taraf"); the rest of the scope is the secondary area. Empty: no split."""
     telegram_token: str | None = None
     telegram_chat_id: int | None = None
     slack_token: str | None = None
@@ -91,6 +94,7 @@ class Config:
             db_path = PROJECT_ROOT / db_path
         scope = _terms(values.get("ECOBOX_SCOPE"), cls.scope_terms)
         record_scope = _terms(values.get("ECOBOX_RECORD_SCOPE"), cls.record_scope_terms)
+        primary = _terms(values.get("ECOBOX_PRIMARY_TERMS"), cls.primary_terms)
         chat_id = get("TELEGRAM_CHAT_ID")
         weekday = int(get("DIGEST_WEEKDAY") or 1)
         return cls(
@@ -102,6 +106,7 @@ class Config:
             backoff_cap_s=int(get("ECOBOX_BACKOFF_CAP_S") or cls.backoff_cap_s),
             scope_terms=scope,
             record_scope_terms=record_scope,
+            primary_terms=primary,
             telegram_token=get("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=int(chat_id) if chat_id else None,
             slack_token=get("SLACK_BOT_TOKEN"),

@@ -245,6 +245,10 @@ Herkese açık sayfa: https://omerozerf.github.io/ecobox-sarj-takip/
   dalındaki görüntülerden ve Ecobox'ın istasyon listesinden üretir; `.env` ve veritabanı
   gerekmez. Sayılar botla aynı koddan (`Statistics`, `InsightEngine`) çıkar, sayfa hiçbirini
   kendi hesaplamaz. Dosyanın biçimi `ecobox/site_data.py` başındadır.
+- **İki taraf.** Görünen kapsam ikiye ayrılır: `ECOBOX_PRIMARY_TERMS` (varsayılan
+  `ego,f blok,dc`) kapsam içinde eşleşen prizler öne çıkan taraftır, kalanı (bugün Arge ve
+  3. Arge Otopark) "diğer yerleşke" olarak daha soluk gösterilir. Her analiz iki taraf için ayrı
+  hesaplanır (`data.json` içindeki `areas`). Değer boş bırakılırsa ayrım kapanır.
 - **Canlı durum** tarayıcıda doğrudan `data` dalındaki günün dosyasından okunur ve üç dakikada
   bir yenilenir. GitHub'ın önbelleği yüzünden birkaç dakika gecikebilir; sayfa okumanın yaşını
   gösterir ve 15 dakikadan eskiyse "son bilinen durum" der.

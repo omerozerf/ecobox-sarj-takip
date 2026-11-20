@@ -317,7 +317,8 @@ def cmd_import_snapshots(args, config: Config, storage: Storage) -> int:
 def cmd_site_data(args, config: Config, storage: Storage) -> int:
     """`storage` is the throwaway in-memory database `main` opens for this command."""
     builder = SiteDataBuilder(HttpEcoboxApi(config.http_timeout_s), storage, SystemClock(),
-                              config.scope_terms, config.poll_interval_s, config.gap_threshold_s)
+                              config.scope_terms, config.poll_interval_s, config.gap_threshold_s,
+                              primary_terms=config.primary_terms)
     data = builder.build(Path(args.snapshots), args.snapshot_base_url)
     size = site_data.write(data, Path(args.out))
     print(f"{args.out}: {size} bayt · {len(data['sockets'])} priz · "

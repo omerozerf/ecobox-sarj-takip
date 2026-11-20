@@ -1,5 +1,7 @@
 // Element builders. Strings always become text nodes, so data never reaches innerHTML.
 
+import { emphasis, sentences } from './prose.js';
+
 export function h(tag, props = {}, ...children) {
   return fill(document.createElement(tag), props, children);
 }
@@ -27,8 +29,32 @@ export function put(container, ...children) {
   container.removeAttribute('aria-busy');
 }
 
+/**
+ * An engine sentence set for reading: one line per sentence, the figures (times, percentages,
+ * durations) in bold. Text nodes only.
+ */
+export function prose(text) {
+  return sentences(text).map((sentence) => h('span', { class: 'sentence' },
+    emphasis(sentence).map((part) => (part.strong ? h('strong', { text: part.text }) : part.text))));
+}
+
 /** A quiet "nothing to show yet" line. */
 export const empty = (text) => h('p', { class: 'empty', text });
+
+/**
+ * A chart's readout: the value in bold, the detail muted on its own line under it. Unchanged
+ * text is left alone, so an aria-live readout does not announce it again.
+ */
+export function readout(el, head, detail = '') {
+  const key = `${head}\u0000${detail}`;
+  if (el.dataset.key === key) return;
+  el.dataset.key = key;
+  el.replaceChildren(...[
+    head ? h('strong', { text: head }) : null,
+    head && detail ? ' ' : null,
+    detail ? h('span', { class: 'readout-detail', text: detail }) : null,
+  ].filter(Boolean));
+}
 
 /** Arrow-key navigation over a set of buttons with one tab stop (roving tabindex). */
 export function roving(buttons, start, next, onFocus) {

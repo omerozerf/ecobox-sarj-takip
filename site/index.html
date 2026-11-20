@@ -6,8 +6,8 @@
   <title>Hacettepe Teknokent şarj prizleri: şu an boş mu?</title>
   <meta name="description" content="Hacettepe Teknokent'teki Ecobox şarj prizleri: şu an hangisi boş, hangi gün ve saatte boş bulma şansı yüksek, araçlar ne kadar kalıyor.">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4f6f8">
-  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e1116">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b6e69'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='8' y='5' width='11' height='22' rx='3'/%3E%3Ccircle cx='13.5' cy='15' r='2.2'/%3E%3Cpath d='M19 18c3.5 0 5 1.3 5 4.5V24'/%3E%3C/g%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
   <script type="module" src="app.js"></script>
@@ -18,24 +18,27 @@
     <div class="wrap brand">
       <span class="mark" data-art></span>
       <div>
-        <p class="kicker">Hacettepe Teknokent · Ecobox</p>
+        <p class="kicker">Hacettepe Teknokent, Ecobox</p>
         <h1>Şarj prizleri</h1>
       </div>
     </div>
   </header>
 
-  <nav class="chips" aria-label="Bölümler">
-    <div class="wrap chips-row">
-      <a href="#simdi">Şu an</a>
-      <a href="#ne-zaman">Ne zaman boş</a>
-      <a href="#prizler">Prizler</a>
-      <a href="#sure">Kalış süresi</a>
-      <a href="#siteler">Diğer siteler</a>
+  <nav class="tabs" aria-label="Bölümler">
+    <div class="wrap">
+      <div class="tabs-row">
+        <a href="#simdi">Şu an</a>
+        <a href="#ne-zaman">Ne zaman</a>
+        <a href="#dc" data-tab="dc" hidden>DC</a>
+        <a href="#prizler">Prizler</a>
+        <a href="#sure">Kalış süresi</a>
+        <a href="#siteler">Siteler</a>
+      </div>
     </div>
   </nav>
 
   <main class="wrap layout">
-    <section id="simdi" class="card live" aria-labelledby="simdi-title">
+    <section id="simdi" class="block live" aria-labelledby="simdi-title">
       <h2 id="simdi-title" class="visually-hidden">Şu an</h2>
       <div class="answer">
         <p class="eyebrow" data-live="eyebrow">Şu an</p>
@@ -46,87 +49,108 @@
         </div>
         <p class="sub" data-live="sub">&nbsp;</p>
         <p class="age" data-live="age">&nbsp;</p>
+        <p class="other-line" hidden><button type="button" class="other-link" data-live="other-line" aria-controls="other-area"></button></p>
       </div>
-      <div class="banner" data-live="banner" role="status" hidden></div>
+      <p class="banner" data-live="banner" role="status" hidden></p>
       <div class="groups" data-live="tiles" aria-busy="true">
         <div class="skeleton" style="height: 22rem"></div>
       </div>
-      <details class="fee">
-        <summary>
-          <span data-icon="clock"></span>
-          <span class="fee-title">İşgaliye: 30 dk içinde çek</span>
-          <span data-icon="chevron" class="fee-chevron"></span>
+      <section class="other-area" id="other-area" data-live="other" hidden></section>
+      <details class="fee disclosure">
+        <summary class="disclose-row">
+          <span data-icon="clock" class="row-icon"></span>
+          <span class="disclose-label">İşgaliye: 30 dk içinde çek</span>
+          <span data-icon="chevron" class="chevron"></span>
         </summary>
-        <ul class="fee-list">
-          <li>Şarj bittikten sonra 30 dakika içinde aracı çekersen ücret yok.</li>
-          <li>30 dakikayı aşarsan, şarjın bittiği andan itibaren dakikası 2 TL.</li>
-          <li>00:00–08:30 arası ücret işlemez; ama bu arada şarjı biten araç 08:30'da çekilmiş olmalı.</li>
-        </ul>
-        <p class="quiet fee-source">Kaynak: Ecobox uygulama duyurusu, 12 Mart 2025</p>
+        <div class="disclosure-body">
+          <ul class="fee-list">
+            <li>Şarj bittikten sonra 30 dakika içinde aracı çekersen ücret yok.</li>
+            <li>30 dakikayı aşarsan, şarjın bittiği andan itibaren dakikası 2 TL.</li>
+            <li>00:00–08:30 arası ücret işlemez; ama bu arada şarjı biten araç 08:30'da çekilmiş olmalı.</li>
+          </ul>
+          <p class="quiet fee-source">Kaynak: Ecobox uygulama duyurusu, 12 Mart 2025</p>
+        </div>
       </details>
     </section>
 
-    <section id="ne-zaman" class="card" aria-labelledby="ne-zaman-title">
+    <div class="analyses">
+    <section id="ne-zaman" class="block" aria-labelledby="ne-zaman-title">
       <h2 id="ne-zaman-title"><span data-icon="calendar"></span>Ne zaman boş olur?</h2>
+      <div class="area-switch" data-area-switch role="group" aria-label="Hangi taraf" hidden></div>
       <p class="pt-now" data-pt="now" aria-live="polite"><span class="pt-live">Şu an</span> canlı durum yükleniyor…</p>
       <div class="pt-days" data-pt="days" role="group" aria-label="Gün seç"></div>
       <div class="pt-head">
-        <p class="pt-caption">En az bir AC prizin boş bulunma şansı</p>
+        <p class="pt-caption">En az bir AC prizin boş olma şansı</p>
         <button type="button" class="toggle" data-pt="all-hours" aria-pressed="false" hidden>Tüm saatler</button>
       </div>
       <div class="pt" data-pt="chart" aria-busy="true"><div class="skeleton" style="height: 10.5rem"></div></div>
       <p class="readout" data-pt="readout" aria-live="polite">&nbsp;</p>
       <ul class="legend pt-legend" data-pt="legend" aria-label="Çubuk açıklaması"></ul>
-      <p class="badge" data-pt="badge" hidden></p>
-      <button type="button" class="more disclose" data-hm="open" aria-expanded="false" aria-controls="haftalik">
-        <span>Haftalık görünüm</span><span data-icon="chevron"></span>
-      </button>
-      <div id="haftalik" class="weekly" data-hm="panel" hidden>
-        <p class="intro">Her kare: o gün ve saatte en az bir AC prizin boş bulunduğu ölçümlerin payı. Soluk kare: boş bulmak zor. Dolgun kare: kolay. Ayrıntı için bir kareye dokun.</p>
-        <div class="hm" data-hm="map" aria-busy="true"><div class="skeleton" style="height: 26rem"></div></div>
-        <p class="readout" data-hm="readout" aria-live="polite">&nbsp;</p>
-        <ul class="legend" data-hm="legend" aria-label="Renk açıklaması"></ul>
-        <h3>Saat saat, günler birlikte</h3>
-        <div class="strips" data-hm="strips" aria-busy="true"><div class="skeleton" style="height: 4.5rem"></div></div>
+      <p class="note-line" data-pt="badge" hidden></p>
+      <div class="disclosure">
+        <button type="button" class="disclose-row" data-hm="open" aria-expanded="false" aria-controls="haftalik">
+          <span class="disclose-label">Haftalık görünüm</span><span data-icon="chevron" class="chevron"></span>
+        </button>
+        <div id="haftalik" class="disclosure-body weekly" data-hm="panel" hidden>
+          <p class="intro">Her kare, o gün ve saatte boş priz bulma şansını gösterir. Koyu kare kolay, açık kare zor demek. Ayrıntı için bir kareye dokun.</p>
+          <div class="hm" data-hm="map" aria-busy="true"><div class="skeleton" style="height: 26rem"></div></div>
+          <p class="readout" data-hm="readout" aria-live="polite">&nbsp;</p>
+          <ul class="legend" data-hm="legend" aria-label="Renk açıklaması"></ul>
+          <h3>Hafta içi ve hafta sonu, saat saat</h3>
+          <div class="strips" data-hm="strips" aria-busy="true"><div class="skeleton" style="height: 4.5rem"></div></div>
+        </div>
       </div>
       <div data-findings="rest"></div>
     </section>
 
-    <section id="prizler" class="card" aria-labelledby="prizler-title">
-      <h2 id="prizler-title"><span data-icon="ac"></span>Hangi priz daha sık boş?</h2>
-      <div data-findings="lead"></div>
-      <p class="caption">Gün boyu ortalama, gece dahil</p>
-      <div data-section="ranking" aria-busy="true"><div class="skeleton" style="height: 24rem"></div></div>
-      <div data-findings="rest"></div>
+    <section id="dc" class="block dc" aria-labelledby="dc-title" hidden>
+      <h2 id="dc-title"><span data-icon="dc"></span>DC hızlı şarj</h2>
+      <p class="intro" data-dc="intro"></p>
+      <div class="area-switch" data-dc="days" role="group" aria-label="Gün türü"></div>
+      <div class="pt-head">
+        <p class="pt-caption">En az bir DC prizin boş olma şansı</p>
+        <button type="button" class="toggle" data-dc="all" aria-pressed="false" hidden>Tüm saatler</button>
+      </div>
+      <div class="pt" data-dc="chart"></div>
+      <p class="readout" data-dc="readout" aria-live="polite">&nbsp;</p>
+      <div class="dc-facts" data-dc="facts"></div>
+      <div data-dc="more"></div>
     </section>
 
-    <section id="sure" class="card" aria-labelledby="sure-title">
+    <section id="prizler" class="block" aria-labelledby="prizler-title">
+      <h2 id="prizler-title"><span data-icon="ac"></span>Hangi priz daha sık boş?</h2>
+      <div data-findings="lead"></div>
+      <p class="caption">Gün boyu ortalama, gece dahil. Yalnızca AC prizler.</p>
+      <div data-section="ranking" aria-busy="true"><div class="skeleton" style="height: 18rem"></div></div>
+      <div data-findings="rest"></div>
+      <div class="secondary-block" data-section="ranking-secondary" hidden></div>
+    </section>
+
+    <section id="sure" class="block" aria-labelledby="sure-title">
       <h2 id="sure-title"><span data-icon="leaving"></span>Araçlar ne kadar kalıyor?</h2>
       <div data-findings="lead"></div>
       <div data-section="stay" aria-busy="true"><div class="skeleton" style="height: 18rem"></div></div>
       <div data-findings="rest"></div>
+      <div class="secondary-block" data-section="stay-secondary" hidden></div>
     </section>
 
-    <section id="siteler" class="card" aria-labelledby="siteler-title">
+    <section id="siteler" class="block" aria-labelledby="siteler-title">
       <h2 id="siteler-title"><span data-icon="pin"></span>Diğer Ecobox siteleriyle karşılaştırma</h2>
       <div data-findings="lead"></div>
       <div data-section="sites" aria-busy="true"><div class="skeleton" style="height: 10rem"></div></div>
     </section>
 
-    <section id="notlar" class="card card-quiet" aria-label="Diğer notlar" hidden>
-      <div data-part="other" hidden>
-        <h2><span data-icon="info"></span>Diğer bulgular</h2>
-        <div data-section="other"></div>
-      </div>
-      <div data-part="missing" hidden>
-        <h2 class="h-quiet">Henüz yeterli veri yok</h2>
-        <div data-section="missing"></div>
-      </div>
+    <section id="notlar" class="block" aria-labelledby="notlar-title" hidden>
+      <h2 id="notlar-title"><span data-icon="info"></span>Diğer bulgular</h2>
+      <div data-section="other"></div>
+      <div class="secondary-block" data-section="other-secondary" hidden></div>
     </section>
+    </div>
   </main>
 
   <footer class="site-footer">
     <div class="wrap">
+      <div class="missing" data-section="missing" hidden></div>
       <div data-section="footer" aria-busy="true"><p>&nbsp;</p><p>&nbsp;</p></div>
       <p>Resmi değildir: Ecobox'un herkese açık harita verisini okuyan kişisel bir proje. Durumlar birkaç dakika gecikmeli olabilir.</p>
       <p><a href="https://github.com/omerozerf/ecobox-sarj-takip">Kaynak kodu GitHub'da</a></p>
