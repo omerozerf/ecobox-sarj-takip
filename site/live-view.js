@@ -2,10 +2,10 @@
 // grouped by location. Groups and tiles are built once from data.json; a live reading only
 // repaints them, reorders the groups (most free first) and folds the ones with nothing free.
 
-import { empty, h, icon, put } from './dom.js';
+import { empty, h, put } from './dom.js';
 import { ago, clock, decimal, minutes, price, titled } from './format.js';
-
-export const STALE_MS = 15 * 60_000;
+import { chargePost, icon } from './icons.js';
+import { acStatus } from './live.js';
 const collator = new Intl.Collator('tr', { numeric: true });
 const PROBLEM_STATES = new Set(['faulted', 'offline', 'maintenance', 'unavailable']);
 
@@ -66,7 +66,13 @@ export class LiveView {
       age: root.querySelector('[data-live=age]'),
       banner: root.querySelector('[data-live=banner]'),
       groups: root.querySelector('[data-live=tiles]'),
+      art: root.querySelector('[data-live=art]'),
     };
+    this.root = root;
+    this.shownFree = null; // the count on screen, so only a change crossfades
+    this.onChange = null; // called after every render (the chart follows the live reading)
+    this.settled = false; // the first fetch has answered, one way or the other
+    this.el.art.replaceChildren(chargePost());
     this.tiles = new Map();
     this.groups = socketGroups(data.sockets).map((g, i) => this.buildGroup(g, i));
     if (this.groups.length) put(this.el.groups, this.groups.map((g) => g.node));
@@ -79,7 +85,7 @@ export class LiveView {
     const summary = h('span', { class: 'group-summary' });
     const bodyId = `group-${index}`;
     const toggle = h('button', { type: 'button', class: 'group-head', 'aria-expanded': 'true', 'aria-controls': bodyId },
-      h('span', { class: 'group-name', text: group.label }), summary, icon('chevron'));
+      icon(group.key === 'dc' ? 'dc' : 'ac'), h('span', { class: 'group-name', text: group.label }), summary, icon('chevron'));
     const body = h('div', { class: 'group-body', id: bodyId },
       shared ? h('p', { class: 'group-meta', text: shared }) : null,
       h('ul', { class: 'tiles' }, group.sockets.map((s) => this.tile(s, shared == null))));
@@ -124,7 +130,7 @@ export class LiveView {
       text += entry.since.exact && !stale ? ` · ${span}` : ` · en az ${span}`;
     }
     const name = state === 'available' ? 'free' : state === 'charging' ? 'busy'
-      : PROBLEM_STATES.has(state) ? 'warn' : state === 'loading' ? null : 'unknown';
+      : PROBLEM_STATES.has(state) ? 'fault' : state === 'loading' ? null : 'unknown';
     tile.state.replaceChildren(...[name ? icon(name) : null, document.createTextNode(text)].filter(Boolean));
   }
 
@@ -134,6 +140,8 @@ export class LiveView {
   }
 
   show(result, now = Date.now()) {
+    if (!this.settled) this.root.classList.add('rise');
+    this.settled = true;
     this.result = result;
     this.failed = false;
     for (const s of this.data.sockets) this.paintTile(s.id, result ? result.states.get(s.id) : { state: null });
@@ -141,9 +149,16 @@ export class LiveView {
   }
 
   fail(now = Date.now()) {
+    if (!this.settled) this.root.classList.add('rise');
+    this.settled = true;
     this.failed = true;
     if (!this.result) for (const s of this.data.sockets) this.paintTile(s.id, { state: null });
     this.render(now);
+  }
+
+  /** What the chart needs from the live side: the AC figure, or null without a reading. */
+  status(now = Date.now()) {
+    return acStatus(this.data.sockets, this.result, now);
   }
 
   stateOf(socket) {
@@ -152,7 +167,13 @@ export class LiveView {
 
   /** Re-renders the answer; cheap, also called every 30 s so the age and staleness move. */
   render(now = Date.now()) {
+    this.renderAnswer(now);
+    this.onChange?.();
+  }
+
+  renderAnswer(now) {
     const { result } = this;
+    this.el.art.hidden = !this.settled || Boolean(result); // only the empty and error states
     if (!result) {
       this.setText(this.el.eyebrow, 'Şu an');
       this.setText(this.el.big, this.failed ? 'Canlı durum alınamadı' : 'Henüz ölçüm yok');
@@ -162,20 +183,26 @@ export class LiveView {
         ? 'Bağlantı ya da veri kaynağı yanıt vermedi. Aşağıdaki istatistikler yine geçerli.'
         : 'Bugün ve dün için kayıtlı ölçüm bulunamadı.');
       this.setText(this.el.age, '');
+      delete this.el.age.dataset.stale;
+      this.shownFree = null;
       this.banner(this.failed ? 'error' : null);
       return;
     }
     const age = now - result.at;
-    const stale = age > STALE_MS;
+    const status = acStatus(this.data.sockets, result, now);
+    const { stale } = status;
     const ac = this.data.sockets.filter((s) => s.kind === 'AC');
     const dc = this.data.sockets.filter((s) => s.kind === 'DC');
     const free = ac.filter((s) => this.stateOf(s) === 'available');
-    const missing = ac.filter((s) => this.stateOf(s) == null).length;
+    const missing = status.total - status.reading;
 
     this.setText(this.el.eyebrow, stale ? 'Son bilinen durum' : 'Şu an · AC prizler');
     const verb = stale ? (free.length ? 'priz boştu' : 'Boş priz yoktu') : (free.length ? 'priz boş' : 'Boş priz yok');
+    const changed = this.shownFree != null && this.shownFree !== status.free;
+    this.shownFree = status.free;
     if (free.length) this.el.big.replaceChildren(h('span', { class: 'num', text: String(free.length) }), ` ${verb}`);
     else this.setText(this.el.big, verb);
+    if (changed) this.crossfade();
     this.el.big.dataset.free = free.length ? 'yes' : 'no';
 
     const ordered = orderByFree(this.groups, (g) => g.sockets.filter((s) => this.stateOf(s) === 'available').length);
@@ -193,6 +220,13 @@ export class LiveView {
       if (entry?.since) this.paintTile(s.id, entry, stale ? result.at : now, stale);
     }
     this.renderGroups(ordered);
+  }
+
+  /** The big answer just changed on a refresh: a short fade instead of a jump. */
+  crossfade() {
+    if (reducedMotion()) return;
+    this.el.big.animate([{ opacity: 0.15, filter: 'blur(2px)' }, { opacity: 1, filter: 'blur(0)' }],
+      { duration: 220, easing: 'ease-out' });
   }
 
   renderFreeLine(free, ordered, ac, stale) {
@@ -265,7 +299,7 @@ export class LiveView {
     }[kind];
     const retry = kind === 'stale' ? null
       : h('button', { type: 'button', class: 'link-button', text: 'Tekrar dene', onclick: () => this.onRetry?.() });
-    el.replaceChildren(...[icon('warn'), h('span', { text }), retry].filter(Boolean));
+    el.replaceChildren(...[icon(kind === 'stale' ? 'clock' : 'warn'), h('span', { text }), retry].filter(Boolean));
   }
 
   setText(el, text) {

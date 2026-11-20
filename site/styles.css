@@ -33,6 +33,10 @@
   --on-b2: #14181f;
   --on-b3: #ffffff;
   --on-b4: #ffffff;
+  --pt-bar: #5b8fcc;
+  --pt-bar-early: #b8c9dc;
+  --pt-now: #123f86;
+  --amber: #b07a00;
   --radius: 16px;
   --gap: 1rem;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -71,10 +75,17 @@
     --on-b2: #ffffff;
     --on-b3: #0e1116;
     --on-b4: #0e1116;
+    --pt-bar: #3d7fc4;
+    --pt-bar-early: #2f4560;
+    --pt-now: #8fcbff;
+    --amber: #e0b040;
   }
 }
 
 *, *::before, *::after { box-sizing: border-box; }
+
+/* Several classes below set `display`; `hidden` must still win. */
+[hidden] { display: none !important; }
 
 html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 
@@ -87,7 +98,12 @@ body {
 }
 
 h1, h2, h3 { line-height: 1.25; margin: 0; }
-h2 { font-size: 1.3125rem; font-weight: 750; letter-spacing: -.01em; margin-bottom: .75rem; }
+h2 {
+  display: flex; align-items: flex-start; gap: .5rem;
+  font-size: 1.3125rem; font-weight: 750; letter-spacing: -.01em; margin-bottom: .875rem;
+}
+h2 [data-icon] { color: var(--accent); margin-top: .05rem; } /* level with the first line when the title wraps */
+h2 .icon { width: 1.5rem; height: 1.5rem; }
 h3 { font-size: 1rem; font-weight: 700; margin: 1.5rem 0 .5rem; }
 p { margin: 0; }
 a { color: var(--accent); text-underline-offset: 2px; }
@@ -111,9 +127,10 @@ button { font: inherit; color: inherit; }
 /* ----- header and section chips ----- */
 .site-header { padding: 1.25rem 0 .75rem; }
 .brand { display: flex; align-items: center; gap: .75rem; }
-.mark { flex: none; width: 2.5rem; height: 2.5rem; }
-.mark rect { fill: var(--accent); }
-.mark path { fill: var(--surface); }
+.mark {
+  flex: none; display: block; width: 3rem; height: 3rem; padding: .3rem;
+  border-radius: 14px; background: var(--accent-soft);
+}
 .kicker { color: var(--muted); font-size: .8125rem; font-weight: 600; letter-spacing: .01em; }
 h1 { font-size: 1.5rem; font-weight: 800; letter-spacing: -.015em; }
 
@@ -197,6 +214,7 @@ h3.first { margin-top: 0; }
 .big .num { color: var(--free); }
 .free-line { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; min-height: 2.75rem; margin-bottom: .5rem; }
 .free-line[data-kind="none"] { font-weight: 600; }
+.free-line:empty { min-height: 0; margin: 0; } /* empty and error states: no hole under the headline */
 .free-label { font-weight: 700; color: var(--free); margin-right: .1rem; }
 .free-chip {
   display: inline-flex; align-items: center; gap: .25rem; min-height: 2.25rem; padding: 0 .75rem 0 .55rem;
@@ -208,6 +226,18 @@ h3.first { margin-top: 0; }
 .sub { color: var(--muted); font-variant-numeric: tabular-nums; }
 .age { margin-top: .25rem; font-weight: 600; font-size: .9375rem; font-variant-numeric: tabular-nums; }
 .age[data-stale="yes"] { color: var(--warn-text); }
+/* A dot before "Son ölçüm": green and softly pulsing while the reading is fresh, amber and still
+   once it is stale. box-shadow only, so the pulse never moves the text. */
+.age[data-stale]::before {
+  content: ""; display: inline-block; width: .5rem; height: .5rem; margin-right: .5rem;
+  border-radius: 50%; vertical-align: .1em; background: var(--free);
+}
+.age[data-stale="no"]::before { animation: pulse 2s ease-out infinite; }
+.age[data-stale="yes"]::before { background: var(--amber); }
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--free) 55%, transparent); }
+  80%, 100% { box-shadow: 0 0 0 .45rem color-mix(in srgb, var(--free) 0%, transparent); }
+}
 
 .banner {
   display: flex; gap: .5rem; align-items: flex-start; flex-wrap: wrap;
@@ -228,6 +258,7 @@ h3.first { margin-top: 0; }
   padding: .5rem .25rem; background: none; border: 0; border-radius: 10px; cursor: pointer; text-align: left;
 }
 .group-name { font-weight: 700; }
+.group-head .icon-ac, .group-head .icon-dc { width: 1.25rem; height: 1.25rem; color: var(--muted); }
 .group-summary { margin-left: auto; color: var(--muted); font-size: .875rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .group[data-free="yes"] .group-summary { color: var(--free); }
 .group-head .icon-chevron { flex: none; color: var(--muted); transition: rotate .15s; }
@@ -259,33 +290,28 @@ h3.first { margin-top: 0; }
 .tile[data-state="faulted"] .tile-state, .tile[data-state="offline"] .tile-state,
 .tile[data-state="maintenance"] .tile-state, .tile[data-state="unavailable"] .tile-state { color: var(--bad); font-weight: 700; }
 
-.icon { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.icon-busy { fill: currentColor; stroke-width: 1; opacity: .7; }
-.icon-free { stroke-width: 2.5; }
+.icon {
+  flex: none; width: 1rem; height: 1rem;
+  fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;
+}
+.icon .fill { fill: currentColor; stroke: none; }
+[data-icon] { display: inline-flex; flex: none; }
+/* Placeholders keep their size before the module fills them, so nothing shifts. */
+h2 [data-icon] { width: 1.5rem; height: 1.5rem; }
+.fee summary [data-icon] { width: 1.25rem; height: 1.25rem; }
+.fee summary .fee-chevron { width: 1rem; height: 1rem; }
+.tile-state .icon, .free-chip .icon { width: 1.125rem; height: 1.125rem; }
 
-/* ----- heat map: today ----- */
-.today-wrap { container-type: inline-size; min-height: 6rem; }
-.today { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; grid-template-columns: repeat(5, minmax(0, 1fr)); }
-@container (min-width: 400px) {
-  .today { grid-template-columns: repeat(7, minmax(0, 1fr)); }
-}
-@container (min-width: 560px) {
-  .today { grid-template-columns: repeat(14, minmax(0, 1fr)); }
-}
-.today-block {
-  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .1rem;
-  min-height: 3.25rem; padding: .3rem .2rem; border-radius: 8px; font-variant-numeric: tabular-nums;
-}
-.today-hour { font-size: .6875rem; font-weight: 500; opacity: .8; line-height: 1; }
-.today-value { font-size: .9375rem; font-weight: 800; line-height: 1.1; white-space: nowrap; }
-.today-value .pct-sign { font-size: .7em; font-weight: 700; opacity: .85; }
-.today-block.is-empty { color: var(--muted); }
-.today-block.is-now { outline: 2.5px solid var(--text); outline-offset: 1px; }
+/* The charge-post illustration: header mark and the live card's empty states. */
+.art { display: block; width: 100%; height: 100%; fill: none; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
+.art-accent { stroke: var(--accent); }
+.art-muted { stroke: var(--muted); }
+.art-soft { fill: var(--accent-soft); }
+.live-art { width: 4.5rem; height: 4.5rem; margin: .25rem 0 .5rem; }
 
 /* ----- heat map: the grid ----- */
-.hm-tools { display: flex; justify-content: flex-end; margin-bottom: .5rem; }
 .toggle {
-  min-height: 44px; padding: 0 1rem; border-radius: 999px; border: 1px solid var(--border-strong);
+  flex: none; white-space: nowrap; min-height: 44px; padding: 0 1rem; border-radius: 999px; border: 1px solid var(--border-strong);
   background: var(--surface); font-weight: 650; font-size: .9375rem; cursor: pointer;
 }
 .toggle[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
@@ -362,6 +388,99 @@ h3.first { margin-top: 0; }
   display: flex; justify-content: space-between; margin-top: .2rem;
   color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums;
 }
+
+/* ----- İşgaliye card ----- */
+.fee { margin-top: .75rem; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+.fee summary {
+  display: flex; align-items: center; gap: .5rem; min-height: 44px; padding: .5rem .75rem;
+  cursor: pointer; list-style: none; font-weight: 650; font-size: .9375rem; border-radius: 12px;
+}
+.fee summary::-webkit-details-marker { display: none; }
+.fee summary [data-icon] { color: var(--accent); }
+.fee summary .icon { width: 1.25rem; height: 1.25rem; }
+.fee-chevron .icon { width: 1rem; height: 1rem; }
+.fee-chevron { margin-left: auto; color: var(--muted); }
+.fee-chevron .icon { transition: rotate .15s; }
+.fee[open] .fee-chevron .icon { rotate: 180deg; }
+.fee-list { margin: 0; padding: 0 .875rem 0 2.6rem; font-size: .9375rem; }
+.fee-list li + li { margin-top: .35rem; }
+.fee-source { padding: .6rem .875rem .8rem 2.6rem; font-size: .8125rem; }
+
+/* ----- popular times ----- */
+.pt-now { min-height: 3rem; margin-bottom: .5rem; font-weight: 600; line-height: 1.45; }
+.pt-live {
+  display: inline-block; margin-right: .3rem; padding: .05rem .5rem; border-radius: 999px;
+  background: var(--surface-2); color: var(--muted); font-size: .8125rem; font-weight: 750;
+}
+.pt-now[data-live="yes"] .pt-live { background: var(--accent); color: var(--surface); }
+
+.pt-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); margin: 0 -2px .5rem; }
+.pt-day {
+  /* The transparent border is part of the 44 px target; the pill is drawn inside it. */
+  position: relative; min-width: 0; min-height: 44px; padding: 0; margin: 0;
+  border: 2px solid transparent; border-radius: 12px; background: var(--surface-2); background-clip: padding-box;
+  font-size: .875rem; font-weight: 650; cursor: pointer;
+}
+.pt-day[aria-pressed="true"] { background-color: var(--accent); color: var(--surface); }
+.pt-day:disabled { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--border); cursor: default; }
+.pt-day.is-today::after {
+  content: ""; position: absolute; left: 50%; bottom: 4px; width: 4px; height: 4px;
+  translate: -50% 0; border-radius: 50%; background: currentColor;
+}
+
+.pt-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .25rem; }
+.pt-caption { color: var(--muted); font-size: .875rem; font-weight: 600; }
+.pt { min-height: 10.5rem; container-type: inline-size; }
+.pt-plot { padding-top: 1.5rem; }
+.pt-bars {
+  display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); height: 8.5rem;
+  border-bottom: 1.5px solid var(--border-strong);
+  /* one faint half-way line */
+  background: linear-gradient(to top, transparent calc(50% - .5px), var(--border) calc(50% - .5px) calc(50% + .5px), transparent calc(50% + .5px));
+}
+.pt-col {
+  position: relative; display: flex; align-items: flex-end; min-width: 0; height: 100%;
+  margin: 0; padding: 0 2px; border: 0; border-radius: 6px 6px 0 0; background: none; cursor: pointer;
+}
+.pt-bars.is-all .pt-col { padding: 0 1px; }
+.pt-bar {
+  display: block; width: 100%; height: max(3px, calc(var(--p) * 100%));
+  border-radius: 4px 4px 1px 1px; background: var(--pt-bar); transform-origin: bottom;
+}
+.pt-col.pt-early .pt-bar { background: var(--pt-bar-early); }
+.pt-col.pt-empty .pt-bar { height: .75rem; background: none; border: 1.5px dashed var(--border-strong); border-bottom: 0; }
+.pt-col.pt-now .pt-bar { background: var(--pt-now); }
+.pt-col.pt-now.pt-early .pt-bar { background: color-mix(in srgb, var(--pt-now) 55%, var(--surface)); }
+.pt-col.pt-now::before { /* "Şu an" over the current hour, kept inside the chart at the edges */
+  content: "Şu an"; position: absolute; top: -1.4rem; left: 50%; translate: -50% 0;
+  white-space: nowrap; font-size: .75rem; font-weight: 750; color: var(--text);
+}
+.pt-col.pt-now:first-child::before { left: 0; translate: 0 0; }
+.pt-col.pt-now:last-child::before { left: auto; right: 0; translate: 0 0; }
+.pt-col.is-picked .pt-bar { outline: 2.5px solid var(--text); outline-offset: 1.5px; }
+.pt-col:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+
+.pt-axis {
+  display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); margin-top: .3rem;
+  color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums;
+}
+.pt-axis span { display: flex; justify-content: center; white-space: nowrap; }
+.pt-legend { margin-top: .25rem; }
+.pt-key { display: inline-block; width: .6rem; height: .9rem; border-radius: 2px 2px 0 0; background: var(--pt-bar); }
+.pt-key.pt-early { background: var(--pt-bar-early); }
+.pt-key.pt-empty { height: .6rem; background: none; border: 1.5px dashed var(--border-strong); border-bottom: 0; }
+.pt-legend + .badge { margin: .75rem 0 0; }
+
+.disclose { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: 1rem; padding-inline: .875rem; text-align: left; }
+.disclose .icon { color: var(--muted); transition: rotate .15s; }
+.disclose[aria-expanded="true"] .icon { rotate: 180deg; }
+.weekly { margin-top: 1rem; }
+
+/* ----- motion: small, and none under reduced motion ----- */
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+@keyframes grow { from { transform: scaleY(0); } }
+.card.rise > :not(h2) { animation: rise .32s ease-out both; }
+.pt-bars.grow .pt-bar { animation: grow .24s cubic-bezier(.2, .7, .3, 1) both; }
 
 /* ----- bars (ranking, sites) ----- */
 .bar { height: .5rem; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
@@ -442,6 +561,6 @@ h3.first { margin-top: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .skeleton { animation: none; }
-  .group-head .icon-chevron { transition: none; }
+  .skeleton, .age[data-stale]::before, .card.rise > :not(h2), .pt-bars.grow .pt-bar { animation: none; }
+  .group-head .icon-chevron, .fee-chevron .icon, .disclose .icon { transition: none; }
 }

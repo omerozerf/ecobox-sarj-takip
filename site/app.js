@@ -1,9 +1,11 @@
 // Entry point: load data.json, fill every section, then keep the live answer fresh.
 
 import { empty, put } from './dom.js';
-import { renderHeatmap } from './heatmap.js';
+import { renderWeekly } from './heatmap.js';
+import { hydrateIcons } from './icons.js';
 import { LiveFeed } from './live.js';
 import { LiveView } from './live-view.js';
+import { renderPopular } from './popular.js';
 import {
   findingsBySection, renderFindingSlots, renderFooter, renderOtherFindings, renderRanking, renderSites, renderStay,
 } from './sections.js';
@@ -20,24 +22,36 @@ async function loadData() {
   return response.json();
 }
 
+/** Fills the history sections; returns the parts that follow the live reading. */
 function renderHistory(data) {
   const findings = findingsBySection(data.findings);
+  const parts = { popular: null, weekly: null };
   const sections = [
-    ['#ne-zaman', (el) => { renderHeatmap(el, data); renderFindingSlots(el, findings.when); }],
-    ['#prizler', (el) => { renderRanking(el.querySelector('[data-section=ranking]'), data); renderFindingSlots(el, findings.sockets); }],
-    ['#sure', (el) => { renderStay(el.querySelector('[data-section=stay]'), data, findings.stay); renderFindingSlots(el, findings.stay); }],
-    ['#siteler', (el) => { renderSites(el.querySelector('[data-section=sites]'), data); renderFindingSlots(el, findings.sites); }],
-    ['#notlar', (el) => renderOtherFindings(el, findings.other, data.missing)],
-    ['[data-section=footer]', (el) => renderFooter(el, data)],
+    ['#ne-zaman', '[data-pt=chart]', (el) => {
+      parts.popular = renderPopular(el, data, { onHours: (all) => parts.weekly?.setAll(all) });
+    }],
+    ['#ne-zaman', '[data-hm=panel]', (el) => {
+      parts.weekly = renderWeekly(el, data);
+      renderFindingSlots(el, findings.when);
+    }],
+    ['#prizler', null, (el) => { renderRanking(el.querySelector('[data-section=ranking]'), data); renderFindingSlots(el, findings.sockets); }],
+    ['#sure', null, (el) => { renderStay(el.querySelector('[data-section=stay]'), data, findings.stay); renderFindingSlots(el, findings.stay); }],
+    ['#siteler', null, (el) => { renderSites(el.querySelector('[data-section=sites]'), data); renderFindingSlots(el, findings.sites); }],
+    ['#notlar', null, (el) => renderOtherFindings(el, findings.other, data.missing)],
+    ['[data-section=footer]', null, (el) => renderFooter(el, data)],
   ];
-  for (const [selector, render] of sections) {
+  for (const [selector, part, render] of sections) {
+    const root = $(selector);
     try {
-      render($(selector));
-    } catch (error) { // one broken section must not take the page down
-      console.error(selector, error);
-      put($(selector).querySelector('[aria-busy]') ?? $(selector), empty('Bu bölüm gösterilemedi.'));
+      render(root);
+    } catch (error) { // one broken part must not take the page down
+      console.error(selector, part, error);
+      const target = part ? root.querySelector(part) : root;
+      put(target.querySelector('[aria-busy]') ?? target, empty('Bu bölüm gösterilemedi.'));
     }
+    if (root.classList.contains('card')) root.classList.add('rise');
   }
+  return parts;
 }
 
 function startLive(data) {
@@ -73,9 +87,11 @@ function startLive(data) {
     view.render();
     if (Date.now() - lastAttempt >= RETURN_REFRESH_MS) refresh();
   });
+  return view;
 }
 
 async function main() {
+  hydrateIcons();
   let data;
   try {
     data = await loadData();
@@ -86,8 +102,13 @@ async function main() {
     document.querySelectorAll('[aria-busy=true]').forEach((el) => put(el, empty('Veri yüklenemedi.')));
     return;
   }
-  startLive(data);
-  renderHistory(data);
+  const view = startLive(data);
+  const { popular } = renderHistory(data);
+  if (popular) {
+    const follow = () => popular.live({ status: view.status(), failed: view.failed, settled: view.settled });
+    view.onChange = follow;
+    follow();
+  }
 }
 
 main();

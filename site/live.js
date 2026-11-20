@@ -3,6 +3,27 @@
 
 const DAY_MS = 86_400_000;
 
+/** A reading older than this is "the last known state", not "now". */
+export const STALE_MS = 15 * 60_000;
+
+/**
+ * The AC side of a live reading, the one figure both the live card and the chart use:
+ * {free, reading, total, at, stale}. `reading` counts AC sockets that have a reading at all.
+ * null without a reading (still loading, failed, or no record today and yesterday).
+ */
+export function acStatus(sockets, result, now = Date.now()) {
+  if (!result) return null;
+  const ac = sockets.filter((s) => s.kind === 'AC');
+  const states = ac.map((s) => result.states.get(s.id)?.state);
+  return {
+    free: states.filter((s) => s === 'available').length,
+    reading: states.filter((s) => s != null).length,
+    total: ac.length,
+    at: result.at,
+    stale: now - result.at > STALE_MS,
+  };
+}
+
 export const utcDay = (ms) => new Date(ms).toISOString().slice(0, 10);
 export const previousDay = (day) => utcDay(Date.parse(`${day}T00:00:00Z`) - DAY_MS);
 

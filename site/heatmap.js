@@ -1,16 +1,18 @@
-// "Ne zaman boş olur": today's hours with their values written out, the weekday × hour map
-// (office hours by default, every hour on request) and the pooled weekday/weekend strips.
-// On a wide card weekdays are rows; below ~520 px the CSS turns hours into rows instead (same
-// buttons, placed by --d/--c), so the week fits a phone without scrolling sideways.
+// "Haftalık görünüm", the secondary view under the popular-times chart: the weekday × hour map
+// (office hours by default, every hour with the chart's toggle) and the pooled weekday/weekend
+// strips, behind a disclosure button. On a wide card weekdays are rows; below ~520 px the CSS
+// turns hours into rows instead (same buttons, placed by --d/--c), so the week fits a phone
+// without scrolling sideways. `cellModel` and `renderBadge` are shared with the chart.
 
 import { h, put, roving } from './dom.js';
 import { decimal, hourLabel, int, localSlot, pct } from './format.js';
 
 const BINS = ['%0–20', '%20–40', '%40–60', '%60–80', '%80–100'];
-const DAY_HOURS = { first: 7, last: 20 };
+export const DAY_HOURS = { first: 7, last: 20 };
 const SETTLED_DATES = 14;
 const bin = (p) => Math.min(4, Math.floor(p * 5));
-const range = (first, last) => Array.from({ length: last - first + 1 }, (_, i) => first + i);
+export const range = (first, last) => Array.from({ length: last - first + 1 }, (_, i) => first + i);
+export const hoursFor = (all) => (all ? range(0, 23) : range(DAY_HOURS.first, DAY_HOURS.last));
 
 /**
  * Shared by every cell: what counts as early (thin) data, how a cell is told, and whether it
@@ -31,32 +33,33 @@ export function cellModel(data) {
   };
   const classes = (cell) => (cell ? [`b${bin(cell.p)}`, dotted(cell) ? 'is-early' : ''] : ['is-empty']).filter(Boolean);
   const anyDot = filled.some(dotted) || [...data.heatmap.weekday_hours, ...data.heatmap.weekend_hours].some(dotted);
-  return { early, describe, classes, minPolls, minDates, youngMap, anyDot };
+  return { early, dotted, describe, classes, minPolls, minDates, youngMap, anyDot };
 }
 
-export function renderHeatmap(root, data, now = Date.now()) {
+/**
+ * Fills the weekly view and wires its disclosure button. Returns {setAll(all)}: the chart's
+ * "Tüm saatler" toggle also widens this map.
+ */
+export function renderWeekly(root, data, now = Date.now()) {
   const model = cellModel(data);
   const slot = localSlot(now);
   const readout = root.querySelector('[data-hm=readout]');
   const say = (text) => { readout.textContent = text; };
   const clearPicked = () => root.querySelectorAll('.is-picked').forEach((b) => b.classList.remove('is-picked'));
 
-  renderToday(root, data, model, slot);
-  renderBadge(root, data);
+  const open = root.querySelector('[data-hm=open]');
+  const panel = root.querySelector('[data-hm=panel]');
+  open.addEventListener('click', () => {
+    const show = panel.hidden;
+    panel.hidden = !show;
+    open.setAttribute('aria-expanded', String(show));
+  });
 
-  // ----- the map, office hours or all of them -----
-  const toggle = root.querySelector('[data-hm=all-hours]');
   let all = false;
-  const drawMap = () => {
-    const hours = all ? range(0, 23) : range(DAY_HOURS.first, DAY_HOURS.last);
-    put(root.querySelector('[data-hm=map]'), mapGrid(data, model, slot, hours, say, clearPicked));
-    toggle.setAttribute('aria-pressed', String(all));
-  };
-  toggle.hidden = false;
-  toggle.addEventListener('click', () => { all = !all; drawMap(); });
+  const drawMap = () => put(root.querySelector('[data-hm=map]'), mapGrid(data, model, slot, hoursFor(all), say, clearPicked));
   drawMap();
   const nowCell = data.heatmap.cells[slot.weekday][slot.hour];
-  say(`Şu an: ${model.describe(`${data.weekday_labels[slot.weekday]} ${hourLabel(slot.hour)}`, nowCell)}`);
+  say(`Genelde bu saatte: ${model.describe(`${data.weekday_labels[slot.weekday]} ${hourLabel(slot.hour)}`, nowCell)}`);
 
   // ----- the pooled strips -----
   const strips = [['Hafta içi', data.heatmap.weekday_hours], ['Hafta sonu', data.heatmap.weekend_hours]].map(([name, row]) => {
@@ -82,6 +85,14 @@ export function renderHeatmap(root, data, now = Date.now()) {
       ? `az ölçüm (${model.minPolls} ölçümden az)`
       : `erken veri (${model.minDates} günden ya da ${model.minPolls} ölçümden az)`),
     h('li', {}, h('span', { class: 'swatch is-empty' }), 'kayıt yok'));
+
+  return {
+    setAll(value) {
+      if (value === all) return;
+      all = value;
+      drawMap();
+    },
+  };
 }
 
 function mapGrid(data, model, slot, hours, say, clearPicked) {
@@ -130,33 +141,8 @@ function mapGrid(data, model, slot, hours, say, clearPicked) {
   return grid;
 }
 
-/** Today's weekday, 07–20, each hour with its value written in; the pooled day kind when
- *  today has no data at all. */
-function renderToday(root, data, model, slot) {
-  const own = data.heatmap.cells[slot.weekday];
-  const pooled = own.every((c) => c == null);
-  const kind = slot.weekday < 5 ? 'hafta içi' : 'hafta sonu';
-  const row = pooled ? (slot.weekday < 5 ? data.heatmap.weekday_hours : data.heatmap.weekend_hours) : own;
-  root.querySelector('[data-hm=today-title]').textContent = `Bugün (${data.weekday_labels[slot.weekday]})`;
-  const note = root.querySelector('[data-hm=today-note]');
-  note.hidden = !pooled;
-  note.textContent = pooled ? `Bu gün için henüz kayıt yok; bütün ${kind} günleri birlikte gösteriliyor.` : '';
-  const blocks = range(DAY_HOURS.first, DAY_HOURS.last).map((hour) => {
-    const cell = row[hour];
-    const label = model.describe(hourLabel(hour), cell);
-    // No early-data dot here: the values are written out and the badge speaks for the map.
-    const fill = model.classes(cell).filter((c) => c !== 'is-early');
-    const value = cell ? [h('span', { class: 'pct-sign', text: '%' }), pct(cell.p).slice(1)] : ['–'];
-    return h('li', { class: ['today-block', ...fill, hour === slot.hour ? 'is-now' : ''].filter(Boolean).join(' '), 'aria-label': label, title: label },
-      h('span', { class: 'today-hour', 'aria-hidden': 'true', text: String(hour).padStart(2, '0') }),
-      h('span', { class: 'today-value', 'aria-hidden': 'true' }, value));
-  });
-  put(root.querySelector('[data-hm=today]'), h('ol', { class: 'today', 'aria-label': 'Bugün saat saat boş priz bulma şansı' }, blocks));
-}
-
 /** While the record is short: how many days the squares actually rest on. */
-function renderBadge(root, data) {
-  const badge = root.querySelector('[data-hm=badge]');
+export function renderBadge(badge, data) {
   const cells = data.heatmap.cells.flat().filter(Boolean);
   if (data.coverage.dates >= SETTLED_DATES || !cells.length) {
     badge.hidden = true;
@@ -164,7 +150,7 @@ function renderBadge(root, data) {
   }
   const single = cells.filter((c) => c.days === 1).length;
   const most = Math.max(...cells.map((c) => c.days));
-  const rest = single * 2 > cells.length ? 'çoğu kare tek bir güne dayanıyor.' : `kareler en çok ${most} güne dayanıyor.`;
+  const rest = single * 2 > cells.length ? 'çoğu saat tek bir güne dayanıyor.' : `saatler en çok ${most} güne dayanıyor.`;
   badge.textContent = `Henüz ${decimal(data.coverage.observed_days)} günlük kayıt: ${rest}`;
   badge.hidden = false;
 }
