@@ -39,6 +39,10 @@ jobs:
         with:
           ref: data
           path: data
+          # Two commits deep: amending today's commit needs its parent in the checkout. At the
+          # default depth of one the parent is cut off and the amend comes out as a root
+          # commit, which the force-push then made the whole history.
+          fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
