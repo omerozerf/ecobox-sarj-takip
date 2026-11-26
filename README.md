@@ -80,7 +80,8 @@ katılmaz (aşağıya bakın). Boşlukları GitHub'daki ikinci kaydedici doldura
 
 GitHub Actions'taki `collect` iş akışı (`.github/workflows/collect.yml`) 3 dakikada bir bütün
 prizlerin ham durumunu çekip deponun `data` dalına `snapshots/` altına yazar (biçim:
-`ecobox/snapshot.py`). GitHub'ın zamanlayıcısı bu depoda hiç tetiklenmediği için iş akışı ona
+`ecobox/snapshot.py`). Dal günde tek commit tutar: o günün her ölçümü aynı commit'i günceller
+(amend + force-push), gün UTC'ye göre döner. GitHub'ın zamanlayıcısı bu depoda hiç tetiklenmediği için iş akışı ona
 bağlı değildir: tek çalışma yaklaşık 5,5 saat döngüde kalır, biterken yerine yenisini başlatır.
 Zincir koparsa `watchdog` iş akışı (saatte bir, zamanlayıcı çalışırsa) onu yeniden başlatır;
 elle başlatmak için `gh workflow run collect.yml`, durdurmak için çalışan işi iptal edin.
