@@ -158,7 +158,7 @@ def _estimator(config: Config) -> ChargeEstimator:
     curve = EnergyCurve(config.kwh_per_percent, config.top_band_start_pct,
                         config.top_band_kwh_per_percent)
     return ChargeEstimator(config.car_charge_kw, curve, config.price_includes_vat,
-                           _idle_fee(config))
+                           _idle_fee(config), config.top_band_time_factor)
 
 
 def _idle_fee(config: Config) -> IdleFeePolicy | None:

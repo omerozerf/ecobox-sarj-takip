@@ -38,18 +38,34 @@ class EnergyCurve:
     def flat(cls, kwh_per_percent: float) -> "EnergyCurve":
         return cls(kwh_per_percent, 100.0, kwh_per_percent)
 
-    def energy_kwh(self, start_pct: float, target_pct: float) -> float:
+    def _split(self, start_pct: float, target_pct: float) -> tuple[float, float]:
+        """Percent points below and above the knee."""
         knee = self.top_band_start_pct
-        below = min(target_pct, knee) - min(start_pct, knee)
-        above = max(target_pct, knee) - max(start_pct, knee)
+        return (min(target_pct, knee) - min(start_pct, knee),
+                max(target_pct, knee) - max(start_pct, knee))
+
+    def energy_kwh(self, start_pct: float, target_pct: float) -> float:
+        below, above = self._split(start_pct, target_pct)
         return below * self.kwh_per_percent + above * self.top_band_kwh_per_percent
+
+    def charge_hours(self, start_pct: float, target_pct: float, power_kw: float,
+                     top_band_time_factor: float) -> float:
+        """Time to charge, kept apart from the energy: a top-band percent takes
+        `top_band_time_factor` times as long as one below the knee. The energy the meter
+        counted there (1.10 kWh/% on 2026-11-13) overstated the time on 2026-11-24, when the
+        last 16 points went nearly as fast as the rest."""
+        below, above = self._split(start_pct, target_pct)
+        return (below + above * top_band_time_factor) * self.kwh_per_percent / power_kw
 
 
 class ChargeEstimator:
     def __init__(self, car_charge_kw: float, curve: EnergyCurve, price_includes_vat: bool,
-                 idle_fee: IdleFeePolicy | None = None):
+                 idle_fee: IdleFeePolicy | None = None, top_band_time_factor: float | None = None):
         self._car_kw = car_charge_kw
         self._curve = curve
+        # Without a measured factor the time follows the energy, as it did before.
+        self._top_time = (curve.top_band_kwh_per_percent / curve.kwh_per_percent
+                          if top_band_time_factor is None else top_band_time_factor)
         self._price_includes_vat = price_includes_vat
         self._idle_fee = idle_fee
 
@@ -60,7 +76,8 @@ class ChargeEstimator:
         effective_kw = self._car_kw if connector_power_kw is None else min(
             self._car_kw, connector_power_kw)
         energy = self._curve.energy_kwh(start_pct, target_pct)
-        duration = timedelta(hours=energy / effective_kw)
+        duration = timedelta(hours=self._curve.charge_hours(start_pct, target_pct, effective_kw,
+                                                            self._top_time))
         cost = currency = service = None
         if tariff is not None:
             price = tariff.energy_price

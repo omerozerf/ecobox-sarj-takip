@@ -327,10 +327,13 @@ yeniden oturtulur. Takma ve çekme saatleri kaydediciden okunur.
 |---|---|---|---|---|
 | 2026-11-13 | Ego 4 | %32 14:09 · %84 18:43 · %100 20:19 | 5,27 | fiş: 66,26 kWh (48,72 kWh %84'e kadar), ort. 10,73 kW |
 | 2026-11-20 | Ego 2 | takma 10:13 (%18) · %78 15:37 · %80 15:53'ten önce · %86 16:25'te çekildi | 5,38 | tahmin %80 için 15:41 demişti; gerçek ~15:48 |
+| 2026-11-24 | Ego 4 | takma 14:27 (%22) · %37 15:42 · %42 16:11 · %52 17:06 · %70 18:46 · %72 18:57 · %76 19:15 · %100 21:27 · çekme 21:29 | 5,33 | %84 üstü ~5,45 dk/%; tahmin %100 için 21:40–21:44 demişti |
 
-İki oturumun ortalaması 5,33 dk/%; 10,6 kW ile 0,94 kWh/% buna denk gelir (10,7 kW ile tahmin
-yaklaşık %1–2 iyimserdi). %84 sonrası için tek tam ölçüm 13 Kasım'daki; 20 Kasım'da %80 → %86
-en fazla 32 dakika sürdü, yani kırılma %84'ten önce değil.
+%84'e kadar üç oturum da 5,27–5,38 dk/% arasında; ortalama 5,33 (10,6 kW ile 0,94 kWh/%).
+%84'ün üstünde süre enerjiden ayrı hesaplanır: bir puan, altındakinden `TOP_BAND_TIME_FACTOR`
+(1,08) kat uzun sürer. Bu iki oturumun ortalaması: 13 Kasım'da 1,15, 24 Kasım'da yaklaşık 1,02.
+Sayaçtaki 1,10 kWh/% yalnızca ücreti belirler; süreyi ona bağlamak 24 Kasım'da %100'ü 13–17
+dakika geç söyletti. Bu ayarla ölçülen her oturumun bitişi ±5 dakika içinde kalıyor.
 
 Tahmin ayrıca aracın en geç ne zaman çekilmesi gerektiğini söyler. Kural Ecobox'ın 12.03.2025
 tarihli uygulama duyurusundan: şarj bittikten sonra 30 dakika tolerans, aşılırsa bitiş anından

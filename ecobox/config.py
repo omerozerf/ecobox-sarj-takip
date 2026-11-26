@@ -52,6 +52,9 @@ class Config:
     kwh_per_percent: float = 0.94
     top_band_start_pct: float = 84.0
     top_band_kwh_per_percent: float = 1.10
+    top_band_time_factor: float = 1.08
+    """How much longer a percent above the knee takes than one below it, fitted to the
+    measured sessions in the README (1.15 on 2026-11-13, about 1.02 on 2026-11-24)."""
     price_includes_vat: bool = True
     idle_fee_per_minute: float = 2.0
     """Ecobox's fee for standing at the socket after the charge; 0 leaves it out of replies."""
@@ -121,6 +124,7 @@ class Config:
             top_band_start_pct=float(get("TOP_BAND_START_PCT") or cls.top_band_start_pct),
             top_band_kwh_per_percent=float(get("TOP_BAND_KWH_PER_PERCENT")
                                            or cls.top_band_kwh_per_percent),
+            top_band_time_factor=float(get("TOP_BAND_TIME_FACTOR") or cls.top_band_time_factor),
             price_includes_vat=(get("PRICE_INCLUDES_VAT") or "true").lower()
             in ("1", "true", "yes", "evet"),
             idle_fee_per_minute=float(get("IDLE_FEE_PER_MINUTE") or cls.idle_fee_per_minute),

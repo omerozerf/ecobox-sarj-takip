@@ -256,3 +256,26 @@ class BotTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TopBandTimeTest(unittest.TestCase):
+    """The time above the knee follows the measured sessions, not the metered energy."""
+
+    CURVE = EnergyCurve(0.94, 84, 1.10)
+    NOW = datetime(2026, 11, 24, 15, 57, tzinfo=UTC)  # 18:57 in Istanbul
+
+    def test_the_2026_11_24_session_lands_within_ten_minutes(self):
+        # Ego 4: 72 % at 18:57, 100 % at 21:27 (150 min) on the owner's Trumore screenshots.
+        e = ChargeEstimator(10.6, self.CURVE, True, None, 1.08).estimate(72, 100, self.NOW, 22, None)
+        self.assertLess(abs(e.duration.total_seconds() / 60 - 150), 10)
+        self.assertAlmostEqual(e.energy_kwh, 12 * 0.94 + 16 * 1.10)
+
+    def test_the_energy_still_drives_the_cost(self):
+        e = ChargeEstimator(10.6, self.CURVE, True, None, 1.0).estimate(84, 100, self.NOW, 22,
+                                                                        TARIFF)
+        self.assertAlmostEqual(e.cost, 16 * 1.10 * 9.29)
+        self.assertAlmostEqual(e.duration.total_seconds() / 3600, 16 * 0.94 / 10.6)
+
+    def test_without_a_factor_the_time_follows_the_energy_as_before(self):
+        e = ChargeEstimator(10.6, self.CURVE, True).estimate(84, 100, self.NOW, 22, None)
+        self.assertAlmostEqual(e.duration.total_seconds() / 3600, 16 * 1.10 / 10.6)
